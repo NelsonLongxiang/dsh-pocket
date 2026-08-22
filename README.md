@@ -183,3 +183,8 @@ npm test                # 代理 / 认证 / 压缩 / 隧道 / 服务 / RPC（43 
 ---
 
 **有问题？欢迎反馈**：遇到 Bug、有想法、想提需求，请到 [GitHub Issues](https://github.com/shaobeichen/dsh-pocket/issues) 告诉我们 🙏
+
+## v1.10.0
+
+- **Breaking-ish**: 默认代理端口 3081 → **13080**（避开 dsh web/test homes 的 308x 段）；显式 `--port` 仍优先。端口被占用时自动 +1 递增寻找空闲端口。
+
