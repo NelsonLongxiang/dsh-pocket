@@ -188,3 +188,8 @@ npm test                # 代理 / 认证 / 压缩 / 隧道 / 服务 / RPC（43 
 
 - **Breaking-ish**: 默认代理端口 3081 → **13080**（避开 dsh web/test homes 的 308x 段）；显式 `--port` 仍优先。端口被占用时自动 +1 递增寻找空闲端口。
 
+
+## v1.30.0
+
+- 包名迁移：`dsh-pocket` → `@nelsonlongxiang/dsh-pocket`（scoped，与生态 .npmrc 路由惯例一致；公网 npmjs 同名包为上游官方线）
+
