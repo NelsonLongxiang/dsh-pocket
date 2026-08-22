@@ -67,7 +67,7 @@ npm install -g @deepseek-ai/dsh     # global install; verify: dsh --version
 
 ```sh
 # 1. Install the plugin (everything in one package)
-dsh plugin --profile web add dsh-pocket -w
+dsh plugin --profile web add @nelsonlongxiang/dsh-pocket -w
 
 # 2. Restart dsh web
 npx @deepseek-ai/dsh web

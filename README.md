@@ -67,7 +67,7 @@ npm install -g @deepseek-ai/dsh     # 全局安装；验证：dsh --version
 
 ```sh
 # 1. 装插件（一个包全都有）
-dsh plugin --profile web add dsh-pocket -w
+dsh plugin --profile web add @nelsonlongxiang/dsh-pocket -w
 
 # 2. 重启 dsh web
 npx @deepseek-ai/dsh web

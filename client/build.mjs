@@ -1,5 +1,5 @@
 // dsh-pocket 网页客户端打包：client/index.jsx → client/client.js
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
@@ -7,7 +7,11 @@ import { build } from 'esbuild';
 const sourceDir = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(sourceDir, '..');
 const outputPath = resolve(packageRoot, 'client/client.js');
-const loaderId = process.env.DSH_POCKET_CLIENT_ID ?? 'dsh-pocket';
+// 注册 id 必须与 boot manifest 的插件行一致（包名）。默认读 package.json 的
+// name，DSH_POCKET_CLIENT_ID 仅用于本地覆盖；写死旧名会让客户端模块系统
+// 以 "loaded without registering" 拒载（包改名 @nelsonlongxiang/ 后的教训）。
+const pkgName = JSON.parse(await readFile(resolve(packageRoot, 'package.json'), 'utf8')).name;
+const loaderId = process.env.DSH_POCKET_CLIENT_ID ?? pkgName;
 
 const result = await build({
   entryPoints: [resolve(sourceDir, 'index.jsx')],
