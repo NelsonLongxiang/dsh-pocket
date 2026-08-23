@@ -503,7 +503,7 @@ function ModelsManagerTab({ api }) {
           h('button', {
             style: { ...styles.btn, height: 26, padding: '0 10px', fontSize: 12 },
             onClick: () => {
-              setAdding(false);
+              setAdding(null);
               if (open) { setEditing(null); return; }
               // models 视图：user 覆盖优先，其次 base/默认（编辑从生效值起步）
               const modelsBase = entry.settingsPath.length === 0
@@ -595,7 +595,7 @@ function ModelsManagerTab({ api }) {
             ? h('div', { style: styles.muted }, '目录已清空——保存后继承提供方默认目录')
             : null,
           // 拉取结果：勾选采纳
-          editing.discovered !== null && editing.discovered.length > 0 ? h('div', { style: { borderTop: '1px dashed var(--dsw-alias-border-l2,#e5e7eb)', paddingTop: 6, display: 'flex', flexDirection: 'column', gap: 4 } },
+          Array.isArray(editing.discovered) && editing.discovered.length > 0 ? h('div', { style: { borderTop: '1px dashed var(--dsw-alias-border-l2,#e5e7eb)', paddingTop: 6, display: 'flex', flexDirection: 'column', gap: 4 } },
             h('div', { style: styles.muted }, '提供方可用模型（勾选采纳）：'),
             editing.discovered.map((d) => {
               const picked = (editing.discoverPicked ?? []).includes(d.id);
@@ -700,7 +700,7 @@ function ModelsManagerTab({ api }) {
             )),
             h('button', { style: { ...styles.btn, height: 26, padding: '0 10px', fontSize: 11 },
               onClick: () => setAdding({ ...adding, models: [...(adding.models ?? []), { id: '' }] }) }, '+ 手动添加模型'),
-            adding.discovered !== null && adding.discovered.length > 0 ? h('div', { style: { borderTop: '1px dashed var(--dsw-alias-border-l2,#e5e7eb)', paddingTop: 6, display: 'flex', flexDirection: 'column', gap: 4 } },
+            Array.isArray(adding.discovered) && adding.discovered.length > 0 ? h('div', { style: { borderTop: '1px dashed var(--dsw-alias-border-l2,#e5e7eb)', paddingTop: 6, display: 'flex', flexDirection: 'column', gap: 4 } },
               h('div', { style: styles.muted }, '提供方可用模型（勾选采纳）：'),
               adding.discovered.map((d) => {
                 const picked = (adding.discoverPicked ?? []).includes(d.id);

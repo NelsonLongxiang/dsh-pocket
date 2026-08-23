@@ -1772,7 +1772,7 @@ function ModelsManagerTab({ api }) {
           (0, import_react2.createElement)("button", {
             style: { ...styles.btn, height: 26, padding: "0 10px", fontSize: 12 },
             onClick: () => {
-              setAdding(false);
+              setAdding(null);
               if (open) {
                 setEditing(null);
                 return;
@@ -1909,7 +1909,7 @@ function ModelsManagerTab({ api }) {
           ),
           editing.modelsTouched && (editing.models ?? []).length === 0 ? (0, import_react2.createElement)("div", { style: styles.muted }, "\u76EE\u5F55\u5DF2\u6E05\u7A7A\u2014\u2014\u4FDD\u5B58\u540E\u7EE7\u627F\u63D0\u4F9B\u65B9\u9ED8\u8BA4\u76EE\u5F55") : null,
           // 拉取结果：勾选采纳
-          editing.discovered !== null && editing.discovered.length > 0 ? (0, import_react2.createElement)(
+          Array.isArray(editing.discovered) && editing.discovered.length > 0 ? (0, import_react2.createElement)(
             "div",
             { style: { borderTop: "1px dashed var(--dsw-alias-border-l2,#e5e7eb)", paddingTop: 6, display: "flex", flexDirection: "column", gap: 4 } },
             (0, import_react2.createElement)("div", { style: styles.muted }, "\u63D0\u4F9B\u65B9\u53EF\u7528\u6A21\u578B\uFF08\u52FE\u9009\u91C7\u7EB3\uFF09\uFF1A"),
@@ -2116,7 +2116,7 @@ function ModelsManagerTab({ api }) {
             style: { ...styles.btn, height: 26, padding: "0 10px", fontSize: 11 },
             onClick: () => setAdding({ ...adding, models: [...adding.models ?? [], { id: "" }] })
           }, "+ \u624B\u52A8\u6DFB\u52A0\u6A21\u578B"),
-          adding.discovered !== null && adding.discovered.length > 0 ? (0, import_react2.createElement)(
+          Array.isArray(adding.discovered) && adding.discovered.length > 0 ? (0, import_react2.createElement)(
             "div",
             { style: { borderTop: "1px dashed var(--dsw-alias-border-l2,#e5e7eb)", paddingTop: 6, display: "flex", flexDirection: "column", gap: 4 } },
             (0, import_react2.createElement)("div", { style: styles.muted }, "\u63D0\u4F9B\u65B9\u53EF\u7528\u6A21\u578B\uFF08\u52FE\u9009\u91C7\u7EB3\uFF09\uFF1A"),
