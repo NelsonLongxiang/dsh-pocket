@@ -327,9 +327,11 @@ function ProviderDirectoryTab({ api }) {
     setBusy(true);
     setError(null);
     try {
+      // IApiClient 方法返回 RpcResponse 信封：{ rpcId, result: { ok, value | error } }
+      // （与核心模型页 store 的解包一致），不是裸业务对象。
       const res = await api.llm.providers({});
-      if (!res?.ok) throw new Error(res?.error?.message ?? 'RPC failed');
-      setProviders(res.value.providers ?? []);
+      if (!res?.result?.ok) throw new Error(res?.result?.error?.message ?? 'RPC failed');
+      setProviders(res.result.value.providers ?? []);
     } catch (err) {
       setError(err?.message ?? String(err));
     } finally {

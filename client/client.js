@@ -1602,8 +1602,8 @@ function ProviderDirectoryTab({ api }) {
     setError(null);
     try {
       const res = await api.llm.providers({});
-      if (!res?.ok) throw new Error(res?.error?.message ?? "RPC failed");
-      setProviders(res.value.providers ?? []);
+      if (!res?.result?.ok) throw new Error(res?.result?.error?.message ?? "RPC failed");
+      setProviders(res.result.value.providers ?? []);
     } catch (err) {
       setError(err?.message ?? String(err));
     } finally {
