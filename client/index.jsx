@@ -339,8 +339,8 @@ function ModelsManagerTab({ api }) {
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState(null); // 操作结果提示
-  const [editing, setEditing] = useState(null); // { provider, keyDraft, baseURL }
-  const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState(null); // { provider, keyDraft, baseURL, models, modelsTouched, discovered, discovering }
+  const [adding, setAdding] = useState(null); // { route, displayName, baseURL, api, keyDraft, models, discovered, discovering }
 
   const load = async () => {
     setBusy(true); setError(null);
@@ -378,6 +378,7 @@ function ModelsManagerTab({ api }) {
   useEffect(() => { load(); }, []);
 
   /** 保存一个 provider 的编辑：key（若有输入）→ credentials.set；baseURL → settings.mutate。 */
+  /** 保存一个 provider 的编辑：key→credentials.set；baseURL/models→settings.mutate（ops 合并）。 */
   const saveEdit = async () => {
     if (!editing) return;
     setBusy(true); setNotice(null);
@@ -385,25 +386,27 @@ function ModelsManagerTab({ api }) {
       const entry = data.providers.find((p) => p.provider === editing.provider);
       const ns = data.namespaces.get(entry.settingsNs);
       const revision = ns?.revision ?? 0;
+      const base = entry.settingsPath.length === 0 ? [] : entry.settingsPath;
+      const ops = [];
       const key = editing.keyDraft.trim();
       if (key.length > 0) {
         const ref = deriveKeyRef(editing.provider);
         await unwrap(api.credentials.set({ ref, value: key }), 'credentials.set');
-        // 确保配置引用了这个约定名（官方 ns 的 profile 可能没写 apiKeyEnv）
         if (entry.settingsPath.length === 0 && ns?.value?.apiKeyEnv !== ref) {
-          await unwrap(api.settings.mutate({
-            ns: entry.settingsNs,
-            ops: [{ op: 'set', path: ['apiKeyEnv'], value: ref }],
-            expectedRevision: revision,
-          }), 'settings.mutate');
+          ops.push({ op: 'set', path: ['apiKeyEnv'], value: ref });
         }
       }
       if (editing.baseURL !== undefined && editing.baseURL.trim() !== '') {
-        const base = entry.settingsPath.length === 0 ? [] : entry.settingsPath;
+        ops.push({ op: 'set', path: [...base, 'baseURL'], value: editing.baseURL.trim() });
+      }
+      if (editing.modelsTouched) {
+        // 与核心页同语义：自定义目录 set 整个 models 数组；清空=unset 继承 adapter 默认
+        if ((editing.models ?? []).length === 0) ops.push({ op: 'unset', path: [...base, 'models'] });
+        else ops.push({ op: 'set', path: [...base, 'models'], value: editing.models.map((m) => ({ ...m })) });
+      }
+      if (ops.length > 0) {
         await unwrap(api.settings.mutate({
-          ns: entry.settingsNs,
-          ops: [{ op: 'set', path: [...base, 'baseURL'], value: editing.baseURL.trim() }],
-          expectedRevision: revision,
+          ns: entry.settingsNs, ops, expectedRevision: revision,
         }), 'settings.mutate');
       }
       setNotice('✅ 已保存 ' + editing.provider);
@@ -436,6 +439,47 @@ function ModelsManagerTab({ api }) {
     }
   };
 
+
+  /** 创建自定义 provider（pi-ai 家族）：与核心 CustomProviderCard 同契约。 */
+  const createProvider = async () => {
+    if (!adding) return;
+    setBusy(true); setNotice(null);
+    try {
+      const route = adding.route.trim().toLowerCase();
+      if (!/^[a-z][a-z0-9-]*$/.test(route)) throw new Error('路由 ID：小写字母开头，仅小写字母/数字/连字符');
+      if ((data.providers ?? []).some((p) => p.provider === route)) throw new Error('路由 ID 已被占用：' + route);
+      const baseURL = adding.baseURL.trim();
+      if (baseURL.length === 0) throw new Error('自定义 provider 需要 API 地址');
+      const models = (adding.models ?? []).filter((m) => (m.id ?? '').trim() !== '');
+      if (models.length === 0) throw new Error('自定义 provider 至少需要一个模型（可先拉取）');
+      const key = adding.keyDraft.trim();
+      const ref = deriveKeyRef(route);
+      const ns = data.namespaces.get('llm-pi-ai');
+      const profile = {
+        ...(adding.displayName.trim().length > 0 ? { displayName: adding.displayName.trim() } : {}),
+        ...(key.length > 0 ? { apiKeyEnv: ref } : {}),
+        api: adding.api,
+        baseURL,
+        models: models.map((m) => ({ ...m })),
+      };
+      await unwrap(api.settings.mutate({
+        ns: 'llm-pi-ai',
+        ops: [{ op: 'set', path: ['providers', route], value: profile }],
+        expectedRevision: ns?.revision ?? 0,
+      }), 'settings.mutate');
+      if (key.length > 0) {
+        await unwrap(api.credentials.set({ ref, value: key }), 'credentials.set');
+      }
+      setNotice('✅ 已创建 ' + route);
+      setAdding(null);
+      await load();
+    } catch (err) {
+      setNotice('❌ ' + (err?.message ?? String(err)));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const rowOf = (entry) => {
     const ns = data.namespaces.get(entry.settingsNs);
     const profile = entry.settingsPath.length === 0 ? ns?.value : ns?.value?.providers?.[entry.provider];
@@ -458,7 +502,28 @@ function ModelsManagerTab({ api }) {
         h('span', { style: { marginLeft: 'auto', display: 'flex', gap: 6 } },
           h('button', {
             style: { ...styles.btn, height: 26, padding: '0 10px', fontSize: 12 },
-            onClick: () => { setAdding(false); setEditing(open ? null : { provider: entry.provider, keyDraft: '', baseURL: profile?.baseURL ?? '' }); },
+            onClick: () => {
+              setAdding(false);
+              if (open) { setEditing(null); return; }
+              // models 视图：user 覆盖优先，其次 base/默认（编辑从生效值起步）
+              const modelsBase = entry.settingsPath.length === 0
+                ? ns?.value?.models
+                : ns?.value?.providers?.[entry.provider]?.models;
+              const modelsCustomized = entry.settingsPath.length === 0
+                ? ns?.user && Array.isArray(ns.user.models)
+                : ns?.user?.providers?.[entry.provider]?.models !== undefined;
+              setEditing({
+                provider: entry.provider,
+                keyDraft: '',
+                baseURL: profile?.baseURL ?? '',
+                models: Array.isArray(modelsBase) ? modelsBase.map((m) => ({ ...m })) : [],
+                modelsTouched: false,
+                modelsCustomized: modelsCustomized === true,
+                discovered: null,
+                discovering: false,
+                discoverPicked: [],
+              });
+            },
           }, open ? '收起' : '编辑'),
           custom && data.writable ? h('button', {
             style: { ...styles.btn, height: 26, padding: '0 10px', fontSize: 12, color: 'var(--dsw-alias-state-error-primary,#dc2626)' },
@@ -491,6 +556,66 @@ function ModelsManagerTab({ api }) {
             onChange: (e) => setEditing({ ...editing, baseURL: e.target.value }),
           }),
         ),
+        // ---- 模型目录编辑（与核心页同语义）----
+        h('div', { style: { fontSize: 12, display: 'flex', flexDirection: 'column', gap: 6 } },
+          h('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+            h('strong', null, '模型目录 | Models'),
+            h('span', { style: styles.muted }, editing.modelsCustomized ? '（已自定义，生效中目录如上）' : '（继承提供方默认）'),
+            h('button', {
+              style: { ...styles.btn, height: 24, padding: '0 8px', fontSize: 11 },
+              disabled: editing.discovering,
+              onClick: () => {
+                setEditing({ ...editing, discovering: true });
+                const payload = { settingsNs: entry.settingsNs, provider: entry.provider };
+                const key = editing.keyDraft.trim();
+                if (key.length > 0) payload.apiKey = key;
+                const bURL = editing.baseURL.trim();
+                if (bURL.length > 0) payload.baseURL = bURL;
+                unwrap(api.llm.discoverModels(payload), 'llm.discoverModels')
+                  .then((v) => setEditing((cur) => cur && cur.provider === entry.provider ? { ...cur, discovered: v.models ?? [], discovering: false } : cur))
+                  .catch((err) => { setNotice('❌ 拉取失败：' + (err?.message ?? err)); setEditing((cur) => cur ? { ...cur, discovering: false } : cur); });
+              },
+            }, editing.discovering ? '拉取中…' : '⟳ 从提供方拉取 | Fetch'),
+          ),
+          // 当前编辑中的目录（可增删改）
+          (editing.models ?? []).map((m, i) => h('div', { key: i, style: { display: 'flex', gap: 4, alignItems: 'center' } },
+            h('input', { value: m.id, placeholder: '模型 ID', style: { ...styles.input, flex: 2 },
+              onChange: (e) => { const next = [...editing.models]; next[i] = { ...m, id: e.target.value }; setEditing({ ...editing, models: next, modelsTouched: true }); } }),
+            h('input', { value: m.name ?? '', placeholder: '显示名(可选)', style: { ...styles.input, flex: 1.2 },
+              onChange: (e) => { const next = [...editing.models]; next[i] = { ...m, name: e.target.value }; setEditing({ ...editing, models: next, modelsTouched: true }); } }),
+            h('input', { value: m.contextWindow ?? '', placeholder: '上下文', style: { ...styles.input, flex: 0.8 }, type: 'number',
+              onChange: (e) => { const next = [...editing.models]; next[i] = { ...m, contextWindow: e.target.value === '' ? undefined : Number(e.target.value) }; setEditing({ ...editing, models: next, modelsTouched: true }); } }),
+            h('button', { style: { ...styles.btn, height: 26, padding: '0 8px', fontSize: 11, color: '#dc2626' },
+              onClick: () => setEditing({ ...editing, models: editing.models.filter((_, j) => j !== i), modelsTouched: true }) }, '✕'),
+          )),
+          h('button', { style: { ...styles.btn, height: 26, padding: '0 10px', fontSize: 11 },
+            onClick: () => setEditing({ ...editing, models: [...(editing.models ?? []), { id: '' }], modelsTouched: true }) },
+            '+ 手动添加模型'),
+          editing.modelsTouched && (editing.models ?? []).length === 0
+            ? h('div', { style: styles.muted }, '目录已清空——保存后继承提供方默认目录')
+            : null,
+          // 拉取结果：勾选采纳
+          editing.discovered !== null && editing.discovered.length > 0 ? h('div', { style: { borderTop: '1px dashed var(--dsw-alias-border-l2,#e5e7eb)', paddingTop: 6, display: 'flex', flexDirection: 'column', gap: 4 } },
+            h('div', { style: styles.muted }, '提供方可用模型（勾选采纳）：'),
+            editing.discovered.map((d) => {
+              const picked = (editing.discoverPicked ?? []).includes(d.id);
+              return h('label', { key: d.id, style: { display: 'flex', gap: 6, alignItems: 'center', fontSize: 12 } },
+                h('input', { type: 'checkbox', checked: picked,
+                  onChange: () => setEditing({ ...editing,
+                    discoverPicked: picked ? (editing.discoverPicked ?? []).filter((x) => x !== d.id) : [...(editing.discoverPicked ?? []), d.id] }) }),
+                h('span', null, d.name || d.id, d.contextWindow ? ' （' + d.contextWindow + ' ctx）' : ''),
+              );
+            }),
+            (editing.discoverPicked ?? []).length > 0 ? h('button', { style: { ...styles.btn, height: 26, padding: '0 10px', fontSize: 11 },
+              onClick: () => {
+                const pickedIds = new Set(editing.discoverPicked ?? []);
+                const existing = new Set((editing.models ?? []).map((m) => m.id));
+                const additions = (editing.discovered ?? []).filter((d) => pickedIds.has(d.id) && !existing.has(d.id))
+                  .map((d) => ({ id: d.id, ...(d.name ? { name: d.name } : {}), ...(d.contextWindow ? { contextWindow: d.contextWindow } : {}), ...(d.maxTokens ? { maxTokens: d.maxTokens } : {}) }));
+                setEditing({ ...editing, models: [...(editing.models ?? []), ...additions], modelsTouched: true, discovered: null, discoverPicked: [] });
+              } }, '采纳勾选 (' + (editing.discoverPicked ?? []).length + ')') : null,
+          ) : null,
+        ),
         h('div', null,
           h('button', { style: styles.primary, disabled: busy || !data.writable, onClick: () => { void saveEdit(); } },
             busy ? '保存中…' : '保存 | Save'),
@@ -516,6 +641,91 @@ function ModelsManagerTab({ api }) {
       data.providers.length === 0
         ? h('div', { style: styles.muted }, '暂无提供方')
         : data.providers.map(rowOf),
+    ) : null,
+
+    // ---- 添加自定义 provider（与核心 CustomProviderCard 同契约）----
+    data && data.writable ? h('div', { style: { ...styles.block, marginTop: 16 } },
+      adding === null
+        ? h('button', { style: styles.btn, onClick: () => { setEditing(null); setAdding({ route: '', displayName: '', baseURL: '', api: 'openai', keyDraft: '', models: [], discovered: null, discovering: false, discoverPicked: [] }); } },
+            '＋ 添加自定义 provider | Add custom provider')
+        : h('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
+          h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between' } },
+            h('strong', null, '新建自定义 provider'),
+            h('button', { style: { ...styles.btn, height: 26, padding: '0 10px', fontSize: 12 }, onClick: () => setAdding(null) }, '取消'),
+          ),
+          h('label', { style: { fontSize: 12, display: 'flex', flexDirection: 'column', gap: 4 } }, '路由 ID（小写字母开头，唯一）',
+            h('input', { value: adding.route, placeholder: 'my-provider', style: styles.input,
+              onChange: (e) => setAdding({ ...adding, route: e.target.value }) })),
+          h('label', { style: { fontSize: 12, display: 'flex', flexDirection: 'column', gap: 4 } }, '显示名称（可选）',
+            h('input', { value: adding.displayName, placeholder: 'My Provider', style: styles.input,
+              onChange: (e) => setAdding({ ...adding, displayName: e.target.value }) })),
+          h('label', { style: { fontSize: 12, display: 'flex', flexDirection: 'column', gap: 4 } }, 'API 协议',
+            h('select', { value: adding.api, style: styles.input,
+              onChange: (e) => setAdding({ ...adding, api: e.target.value }) },
+              h('option', { value: 'openai' }, 'OpenAI 兼容'),
+              h('option', { value: 'anthropic' }, 'Anthropic 兼容'))),
+          h('label', { style: { fontSize: 12, display: 'flex', flexDirection: 'column', gap: 4 } }, 'API 地址',
+            h('input', { value: adding.baseURL, placeholder: 'https://api.example.com/v1', style: styles.input,
+              onChange: (e) => setAdding({ ...adding, baseURL: e.target.value }) })),
+          h('label', { style: { fontSize: 12, display: 'flex', flexDirection: 'column', gap: 4 } }, 'API 密钥（可留空——若该服务无需鉴权）',
+            h('input', { type: 'password', value: adding.keyDraft, style: styles.input,
+              onChange: (e) => setAdding({ ...adding, keyDraft: e.target.value }) })),
+          // 模型目录（同编辑区组件逻辑，独立状态）
+          h('div', { style: { fontSize: 12, display: 'flex', flexDirection: 'column', gap: 6 } },
+            h('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+              h('strong', null, '模型目录'),
+              h('button', {
+                style: { ...styles.btn, height: 24, padding: '0 8px', fontSize: 11 },
+                disabled: adding.discovering,
+                onClick: () => {
+                  setAdding({ ...adding, discovering: true });
+                  const payload = { settingsNs: 'llm-pi-ai', api: adding.api };
+                  const bURL = adding.baseURL.trim();
+                  if (bURL) payload.baseURL = bURL;
+                  const key = adding.keyDraft.trim();
+                  if (key) payload.apiKey = key;
+                  unwrap(api.llm.discoverModels(payload), 'llm.discoverModels')
+                    .then((v) => setAdding((cur) => cur ? { ...cur, discovered: v.models ?? [], discovering: false } : cur))
+                    .catch((err) => { setNotice('❌ 拉取失败：' + (err?.message ?? err)); setAdding((cur) => cur ? { ...cur, discovering: false } : cur); });
+                },
+              }, adding.discovering ? '拉取中…' : '⟳ 从提供方拉取 | Fetch'),
+            ),
+            (adding.models ?? []).map((m, i) => h('div', { key: i, style: { display: 'flex', gap: 4, alignItems: 'center' } },
+              h('input', { value: m.id, placeholder: '模型 ID', style: { ...styles.input, flex: 2 },
+                onChange: (e) => { const next = [...adding.models]; next[i] = { ...m, id: e.target.value }; setAdding({ ...adding, models: next }); } }),
+              h('input', { value: m.name ?? '', placeholder: '显示名(可选)', style: { ...styles.input, flex: 1.2 },
+                onChange: (e) => { const next = [...adding.models]; next[i] = { ...m, name: e.target.value }; setAdding({ ...adding, models: next }); } }),
+              h('button', { style: { ...styles.btn, height: 26, padding: '0 8px', fontSize: 11, color: '#dc2626' },
+                onClick: () => setAdding({ ...adding, models: adding.models.filter((_, j) => j !== i) }) }, '✕'),
+            )),
+            h('button', { style: { ...styles.btn, height: 26, padding: '0 10px', fontSize: 11 },
+              onClick: () => setAdding({ ...adding, models: [...(adding.models ?? []), { id: '' }] }) }, '+ 手动添加模型'),
+            adding.discovered !== null && adding.discovered.length > 0 ? h('div', { style: { borderTop: '1px dashed var(--dsw-alias-border-l2,#e5e7eb)', paddingTop: 6, display: 'flex', flexDirection: 'column', gap: 4 } },
+              h('div', { style: styles.muted }, '提供方可用模型（勾选采纳）：'),
+              adding.discovered.map((d) => {
+                const picked = (adding.discoverPicked ?? []).includes(d.id);
+                return h('label', { key: d.id, style: { display: 'flex', gap: 6, alignItems: 'center', fontSize: 12 } },
+                  h('input', { type: 'checkbox', checked: picked,
+                    onChange: () => setAdding({ ...adding,
+                      discoverPicked: picked ? (adding.discoverPicked ?? []).filter((x) => x !== d.id) : [...(adding.discoverPicked ?? []), d.id] }) }),
+                  h('span', null, d.name || d.id, d.contextWindow ? ' （' + d.contextWindow + ' ctx）' : ''),
+                );
+              }),
+              (adding.discoverPicked ?? []).length > 0 ? h('button', { style: { ...styles.btn, height: 26, padding: '0 10px', fontSize: 11 },
+                onClick: () => {
+                  const pickedIds = new Set(adding.discoverPicked ?? []);
+                  const existing = new Set((adding.models ?? []).map((m) => m.id));
+                  const additions = (adding.discovered ?? []).filter((d) => pickedIds.has(d.id) && !existing.has(d.id))
+                    .map((d) => ({ id: d.id, ...(d.name ? { name: d.name } : {}), ...(d.contextWindow ? { contextWindow: d.contextWindow } : {}), ...(d.maxTokens ? { maxTokens: d.maxTokens } : {}) }));
+                  setAdding({ ...adding, models: [...(adding.models ?? []), ...additions], discovered: null, discoverPicked: [] });
+                } }, '采纳勾选 (' + (adding.discoverPicked ?? []).length + ')') : null,
+            ) : null,
+          ),
+          h('div', null,
+            h('button', { style: styles.primary, disabled: busy, onClick: () => { void createProvider(); } },
+              busy ? '创建中…' : '创建 | Create'),
+          ),
+        ),
     ) : null,
   );
 }
