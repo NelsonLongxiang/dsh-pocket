@@ -1593,6 +1593,67 @@ function PocketSettingsTab({ rpcCall }) {
     )
   );
 }
+function ProviderDirectoryTab({ api }) {
+  const [providers, setProviders] = (0, import_react2.useState)(null);
+  const [error, setError] = (0, import_react2.useState)(null);
+  const [busy, setBusy] = (0, import_react2.useState)(false);
+  const load = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await api.llm.providers({});
+      if (!res?.ok) throw new Error(res?.error?.message ?? "RPC failed");
+      setProviders(res.value.providers ?? []);
+    } catch (err) {
+      setError(err?.message ?? String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  (0, import_react2.useEffect)(() => {
+    load();
+  }, []);
+  return (0, import_react2.createElement)(
+    "div",
+    { style: styles.card },
+    (0, import_react2.createElement)(
+      "div",
+      { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 } },
+      (0, import_react2.createElement)("strong", null, "\u{1F4E1} \u63D0\u4F9B\u65B9\u76EE\u5F55 | Provider directory"),
+      (0, import_react2.createElement)(
+        "button",
+        { style: { ...styles.btn, height: 28, padding: "0 12px", fontSize: 12 }, onClick: load, disabled: busy },
+        busy ? "\u52A0\u8F7D\u4E2D\u2026" : "\u5237\u65B0 | Refresh"
+      )
+    ),
+    (0, import_react2.createElement)(
+      "div",
+      { style: { ...styles.muted, marginTop: 4 } },
+      "\u53EA\u8BFB\u76EE\u5F55\uFF1AAPI \u5BC6\u94A5\u4E0E\u6A21\u578B\u914D\u7F6E\u8BF7\u5728\u672C\u673A\u6253\u5F00\u300C\u6A21\u578B\u300D\u9875\u7BA1\u7406 | Read-only listing \u2014 manage API keys on the host's Models page"
+    ),
+    error ? (0, import_react2.createElement)("div", { style: { color: "var(--dsw-alias-state-error-primary,#dc2626)", fontSize: 12, marginTop: 10 } }, `\u274C ${error}`) : null,
+    providers === null && !error ? (0, import_react2.createElement)("div", { style: { ...styles.muted, marginTop: 10 } }, "\u52A0\u8F7D\u4E2D\u2026 | loading\u2026") : null,
+    Array.isArray(providers) ? providers.length === 0 ? (0, import_react2.createElement)("div", { style: { ...styles.muted, marginTop: 10 } }, "\u76EE\u5F55\u4E3A\u7A7A | no providers declared") : (0, import_react2.createElement)(
+      "div",
+      { style: { marginTop: 10 } },
+      providers.map((entry) => (0, import_react2.createElement)(
+        "div",
+        {
+          key: entry.provider,
+          style: { display: "flex", alignItems: "center", gap: 8, padding: "7px 0", borderTop: "1px solid var(--dsw-alias-border-l2,#e5e7eb)", fontSize: 13 }
+        },
+        // 启用状态点：绿=适配器在用；灰=已声明未启用
+        (0, import_react2.createElement)("span", {
+          title: entry.active ? "\u542F\u7528\u4E2D | active" : "\u672A\u542F\u7528 | inactive",
+          style: { color: entry.active ? "var(--dsw-alias-state-success-primary,#16a34a)" : "var(--dsw-alias-label-tertiary,#8b93a1)", fontSize: 11 }
+        }, "\u25CF"),
+        (0, import_react2.createElement)("span", { style: { fontWeight: 500 } }, entry.displayName),
+        entry.declared === true ? (0, import_react2.createElement)("span", { style: { ...styles.muted, border: "1px solid var(--dsw-alias-border-l2,#e5e7eb)", borderRadius: 999, padding: "1px 8px", fontSize: 11 } }, "\u81EA\u5B9A\u4E49 | Custom") : null,
+        (0, import_react2.createElement)("span", { style: styles.muted }, entry.provider)
+      ))
+    ) : null
+  );
+}
 function apply(ctx) {
   mobileApply(ctx);
   const rpcCall = (endpoint, payload, signal) => ctx.connection.rpc.call(POCKET_RPC_CHANNEL, endpoint, payload, signal);
@@ -1607,6 +1668,20 @@ function apply(ctx) {
         inject: () => ({ rpcCall })
       },
       PocketSettingsTab
+    )
+  );
+  const api = ctx.connection.api;
+  ctx.slots.inject(
+    "settings.section",
+    () => ctx.slots.register(
+      {
+        name: "settings.section",
+        id: "pocket-providers",
+        order: 2,
+        label: () => "\u63D0\u4F9B\u65B9\u76EE\u5F55",
+        inject: () => ({ api })
+      },
+      ProviderDirectoryTab
     )
   );
 }

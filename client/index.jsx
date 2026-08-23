@@ -314,6 +314,65 @@ function PocketSettingsTab({ rpcCall }) {
   );
 }
 
+// 提供方目录（只读）：llm.providers 是普通 RPC，局域网/公网代理下也能应答，
+// 而核心「模型」页依赖的设置文档读取是 loopback-only——远程打开必然报
+// 「加载提供方目录失败」。这里补一个任何访问方式都能看的只读目录；
+// 密钥与配置仍归本机的「模型」页管。
+function ProviderDirectoryTab({ api }) {
+  const [providers, setProviders] = useState(null);
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await api.llm.providers({});
+      if (!res?.ok) throw new Error(res?.error?.message ?? 'RPC failed');
+      setProviders(res.value.providers ?? []);
+    } catch (err) {
+      setError(err?.message ?? String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  return h('div', { style: styles.card },
+    h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 } },
+      h('strong', null, '📡 提供方目录 | Provider directory'),
+      h('button', { style: { ...styles.btn, height: 28, padding: '0 12px', fontSize: 12 }, onClick: load, disabled: busy },
+        busy ? '加载中…' : '刷新 | Refresh'),
+    ),
+    h('div', { style: { ...styles.muted, marginTop: 4 } },
+      '只读目录：API 密钥与模型配置请在本机打开「模型」页管理 | Read-only listing — manage API keys on the host\'s Models page'),
+
+    error ? h('div', { style: { color: 'var(--dsw-alias-state-error-primary,#dc2626)', fontSize: 12, marginTop: 10 } }, `❌ ${error}`) : null,
+
+    providers === null && !error ? h('div', { style: { ...styles.muted, marginTop: 10 } }, '加载中… | loading…') : null,
+    Array.isArray(providers) ? (
+      providers.length === 0
+        ? h('div', { style: { ...styles.muted, marginTop: 10 } }, '目录为空 | no providers declared')
+        : h('div', { style: { marginTop: 10 } },
+          providers.map((entry) => h('div', {
+            key: entry.provider,
+            style: { display: 'flex', alignItems: 'center', gap: 8, padding: '7px 0', borderTop: '1px solid var(--dsw-alias-border-l2,#e5e7eb)', fontSize: 13 },
+          },
+            // 启用状态点：绿=适配器在用；灰=已声明未启用
+            h('span', {
+              title: entry.active ? '启用中 | active' : '未启用 | inactive',
+              style: { color: entry.active ? 'var(--dsw-alias-state-success-primary,#16a34a)' : 'var(--dsw-alias-label-tertiary,#8b93a1)', fontSize: 11 },
+            }, '●'),
+            h('span', { style: { fontWeight: 500 } }, entry.displayName),
+            entry.declared === true ? h('span', { style: { ...styles.muted, border: '1px solid var(--dsw-alias-border-l2,#e5e7eb)', borderRadius: 999, padding: '1px 8px', fontSize: 11 } }, '自定义 | Custom') : null,
+            h('span', { style: styles.muted }, entry.provider),
+          )),
+        )
+    ) : null,
+  );
+}
+
 export function apply(ctx) {
   // 移动端适配（dsh-web-mobile 移植）：抽屉布局/触控/安全区，仅窄屏生效
   mobileApply(ctx);
@@ -332,6 +391,22 @@ export function apply(ctx) {
         inject: () => ({ rpcCall }),
       },
       PocketSettingsTab,
+    ),
+  );
+
+  // 提供方目录：只读、任何访问方式可用（局域网/公网代理下核心「模型」页的
+  // 设置读取不可达，这里是远程唯一能看到目录的地方）
+  const api = ctx.connection.api;
+  ctx.slots.inject('settings.section', () =>
+    ctx.slots.register(
+      {
+        name: 'settings.section',
+        id: 'pocket-providers',
+        order: 2,
+        label: () => '提供方目录',
+        inject: () => ({ api }),
+      },
+      ProviderDirectoryTab,
     ),
   );
 }
