@@ -375,11 +375,11 @@ test('访问令牌认证（issue #13）：公网需登录、cookie 放行、局�
   const r4 = await raw({ ...publicH, 'Content-Type': 'application/x-www-form-urlencoded' }, 'POST', 'token=' + TOKEN, '/pocket-login');
   assert.equal(r4.status, 302, '正确密码重定向');
   const sc = (r4.headers['set-cookie'] || []).join(';');
-  assert.ok(sc.includes('dsh_pocket_token=' + TOKEN), '种 HttpOnly cookie');
+  assert.ok(sc.includes('dsh_pocket_token_' + proxy.port + '=' + TOKEN), '种 HttpOnly cookie（端口隔离名）');
   assert.ok(sc.includes('HttpOnly'), 'HttpOnly');
 
   // 5) 带 cookie → 放行
-  const r5 = await raw({ Host: 'abc.trycloudflare.com', Accept: 'application/json', Cookie: 'dsh_pocket_token=' + TOKEN });
+  const r5 = await raw({ Host: 'abc.trycloudflare.com', Accept: 'application/json', Cookie: 'dsh_pocket_token_' + proxy.port + '=' + TOKEN });
   assert.equal(r5.status, 200, '带 cookie 放行');
   assert.ok(r5.body.includes('dsh'), '内容正常');
 
@@ -388,7 +388,7 @@ test('访问令牌认证（issue #13）：公网需登录、cookie 放行、局�
   assert.equal(r6.status, 200);
   assert.ok(r6.body.includes('访问密码'), '局域网也需要密码（登录页）');
   // 局域网带 cookie → 放行
-  const r6b = await raw({ ...lanH, Cookie: 'dsh_pocket_token=' + TOKEN });
+  const r6b = await raw({ ...lanH, Cookie: 'dsh_pocket_token_' + proxy.port + '=' + TOKEN });
   assert.equal(r6b.status, 200, '局域网带 cookie 放行');
 
   // 7) WS：未认证 → 拒绝
