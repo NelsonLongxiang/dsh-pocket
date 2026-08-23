@@ -102,3 +102,26 @@ test('client bundle：status 访问必须可选链（回归：1.9.0 白屏——
   assert.ok(!src.includes('status.lanAuthEnabled'), 'bundle 不允许裸 status.lanAuthEnabled（必须可选链）');
   assert.ok(src.includes('status?.lanAuthEnabled'), 'bundle 存在可选链访问');
 });
+
+test('移动导航 backdrop（issue #38）：点击穿透不抢抽屉内点击 + 抽屉外点击关闭保留', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8');
+  // CSS：backdrop 必须 pointer-events: none（纯压暗层，不接收点击）
+  const css = src.match(/\[data-mobile-nav="backdrop"\][^}]*}/)?.[0] ?? '';
+  assert.ok(css.includes('pointer-events: none'), 'backdrop 点击穿透');
+  // JSX：backdrop 是纯视觉 div（无 role/onClick）
+  assert.ok(src.includes('"data-mobile-nav": "backdrop"'), 'backdrop 纯视觉渲染');
+  // 关闭逻辑：抽屉内导航关闭 + 抽屉外点击关闭（两套 document capture contains 处理）
+  assert.ok((src.match(/contains\(target\)/g) || []).length >= 2, '存在抽屉内外两套点击处理');
+  // 抽屉层级（PR #42）：必须高于第三方插件对 shell overlay 层的抬升（500）
+  // 直接断言 bundle 中抽屉规则的 z-index: 600（若退回 40 则此处失败）
+  assert.ok(src.includes('z-index: 600 !important'), '抽屉 z-index 600（高于 overlay 抬升 500）');
+  assert.ok(!src.includes('z-index: 40 !important'), '不再用 40（会被第三方抬升的 overlay 盖住）');
+});
+
+test('公网免责声明（issue #31）：bundle 含弹框与勾选逻辑，RPC 必须带 disclaimer 确认', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8');
+  assert.ok(src.includes('disclaimer'), 'bundle 含免责声明逻辑');
+  assert.ok(src.includes('disclaimer: true'), '开启公网带免责声明确认参数');
+});
