@@ -1303,7 +1303,8 @@ var styles = {
   // 次级按钮：官方 outline/ghost 胶囊形
   btn: { font: "inherit", cursor: "pointer", border: "1px solid var(--dsw-alias-button-ghost-active-border, var(--dsw-alias-border-l2,#d1d5db))", background: "var(--dsw-alias-bg-layer-1,#fff)", color: "var(--dsw-alias-label-primary,inherit)", height: 36, padding: "0 16px", borderRadius: 999, fontSize: 13, display: "inline-flex", alignItems: "center", justifyContent: "center" },
   qr: { width: 220, height: 220, borderRadius: 10, border: "1px solid var(--dsw-alias-border-l2,#e5e7eb)", margin: "8px 0" },
-  warn: { color: "var(--dsw-alias-state-warn-primary,#b45309)", fontSize: 12, lineHeight: 1.5 }
+  warn: { color: "var(--dsw-alias-state-warn-primary,#b45309)", fontSize: 12, lineHeight: 1.5 },
+  input: { font: "inherit", fontSize: 13, padding: "8px 10px", border: "1px solid var(--dsw-alias-border-l2,#d1d5db)", borderRadius: 8, background: "var(--dsw-alias-bg-layer-1,#fff)", color: "var(--dsw-alias-label-primary,inherit)", width: "100%", boxSizing: "border-box" }
 };
 function PocketSettingsTab({ rpcCall }) {
   const [status, setStatus] = (0, import_react2.useState)(null);
@@ -1593,17 +1594,47 @@ function PocketSettingsTab({ rpcCall }) {
     )
   );
 }
-function ProviderDirectoryTab({ api }) {
-  const [providers, setProviders] = (0, import_react2.useState)(null);
+var LLm_NS_FILTER = (ns) => typeof ns === "string" && ns.startsWith("llm-");
+function deriveKeyRef(provider) {
+  return provider.toUpperCase().replace(/[^A-Z0-9]+/g, "_") + "_API_KEY";
+}
+async function unwrap(promise, what) {
+  const res = await promise;
+  if (!res?.result?.ok) throw new Error(res?.result?.error?.message ?? what + " failed");
+  return res.result.value;
+}
+function ModelsManagerTab({ api }) {
+  const [data, setData] = (0, import_react2.useState)(null);
   const [error, setError] = (0, import_react2.useState)(null);
   const [busy, setBusy] = (0, import_react2.useState)(false);
+  const [notice, setNotice] = (0, import_react2.useState)(null);
+  const [editing, setEditing] = (0, import_react2.useState)(null);
+  const [adding, setAdding] = (0, import_react2.useState)(false);
   const load = async () => {
     setBusy(true);
     setError(null);
     try {
-      const res = await api.llm.providers({});
-      if (!res?.result?.ok) throw new Error(res?.result?.error?.message ?? "RPC failed");
-      setProviders(res.result.value.providers ?? []);
+      const [directory, settingsDoc] = await Promise.all([
+        unwrap(api.llm.providers({}), "llm.providers"),
+        unwrap(api.settings.describe({}), "settings.describe")
+      ]);
+      const providers = directory.providers ?? [];
+      const llmNamespaces = (settingsDoc.namespaces ?? []).filter((n) => LLm_NS_FILTER(n.ns));
+      const nsByNs = new Map(llmNamespaces.map((n) => [n.ns, n]));
+      const refs = [...new Set(providers.map((p) => {
+        const ns = nsByNs.get(p.settingsNs);
+        const profile = p.settingsPath.length === 0 ? ns?.value : ns?.value?.providers?.[p.provider];
+        return profile?.apiKeyEnv ?? (p.settingsPath.length > 0 ? deriveKeyRef(p.provider) : null);
+      }).filter(Boolean))];
+      let credentials = {};
+      if (refs.length > 0) {
+        try {
+          const cred = await unwrap(api.credentials.describe({ refs }), "credentials.describe");
+          credentials = cred.credentials ?? {};
+        } catch {
+        }
+      }
+      setData({ providers, namespaces: nsByNs, writable: settingsDoc.writable !== false, credentials });
     } catch (err) {
       setError(err?.message ?? String(err));
     } finally {
@@ -1613,13 +1644,157 @@ function ProviderDirectoryTab({ api }) {
   (0, import_react2.useEffect)(() => {
     load();
   }, []);
+  const saveEdit = async () => {
+    if (!editing) return;
+    setBusy(true);
+    setNotice(null);
+    try {
+      const entry = data.providers.find((p) => p.provider === editing.provider);
+      const ns = data.namespaces.get(entry.settingsNs);
+      const revision = ns?.revision ?? 0;
+      const key = editing.keyDraft.trim();
+      if (key.length > 0) {
+        const ref = deriveKeyRef(editing.provider);
+        await unwrap(api.credentials.set({ ref, value: key }), "credentials.set");
+        if (entry.settingsPath.length === 0 && ns?.value?.apiKeyEnv !== ref) {
+          await unwrap(api.settings.mutate({
+            ns: entry.settingsNs,
+            ops: [{ op: "set", path: ["apiKeyEnv"], value: ref }],
+            expectedRevision: revision
+          }), "settings.mutate");
+        }
+      }
+      if (editing.baseURL !== void 0 && editing.baseURL.trim() !== "") {
+        const base = entry.settingsPath.length === 0 ? [] : entry.settingsPath;
+        await unwrap(api.settings.mutate({
+          ns: entry.settingsNs,
+          ops: [{ op: "set", path: [...base, "baseURL"], value: editing.baseURL.trim() }],
+          expectedRevision: revision
+        }), "settings.mutate");
+      }
+      setNotice("\u2705 \u5DF2\u4FDD\u5B58 " + editing.provider);
+      setEditing(null);
+      await load();
+    } catch (err) {
+      setNotice("\u274C " + (err?.message ?? String(err)));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const removeProvider = async (entry) => {
+    setBusy(true);
+    setNotice(null);
+    try {
+      const ns = data.namespaces.get(entry.settingsNs);
+      if (!ns?.user || entry.settingsPath.length === 0) throw new Error("\u4EC5\u81EA\u5B9A\u4E49 provider \u53EF\u5220\u9664");
+      await unwrap(api.settings.mutate({
+        ns: entry.settingsNs,
+        ops: [{ op: "unset", path: entry.settingsPath }],
+        expectedRevision: ns.revision ?? 0
+      }), "settings.mutate");
+      setNotice("\u{1F5D1}\uFE0F \u5DF2\u5220\u9664 " + entry.provider);
+      await load();
+    } catch (err) {
+      setNotice("\u274C " + (err?.message ?? String(err)));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const rowOf = (entry) => {
+    const ns = data.namespaces.get(entry.settingsNs);
+    const profile = entry.settingsPath.length === 0 ? ns?.value : ns?.value?.providers?.[entry.provider];
+    const keyRef = profile?.apiKeyEnv ?? (entry.settingsPath.length > 0 ? deriveKeyRef(entry.provider) : null);
+    const cred = keyRef ? data.credentials[keyRef] : null;
+    const custom = entry.declared === true || entry.settingsPath.length > 0;
+    const open = editing?.provider === entry.provider;
+    return (0, import_react2.createElement)(
+      "div",
+      {
+        key: entry.provider,
+        style: { padding: "10px 0", borderTop: "1px solid var(--dsw-alias-border-l2,#e5e7eb)" }
+      },
+      (0, import_react2.createElement)(
+        "div",
+        { style: { display: "flex", alignItems: "center", gap: 8, fontSize: 13 } },
+        (0, import_react2.createElement)("span", {
+          title: entry.active ? "\u542F\u7528\u4E2D | active" : "\u672A\u542F\u7528 | inactive",
+          style: { color: entry.active ? "var(--dsw-alias-state-success-primary,#16a34a)" : "var(--dsw-alias-label-tertiary,#8b93a1)", fontSize: 11 }
+        }, "\u25CF"),
+        (0, import_react2.createElement)("span", { style: { fontWeight: 500 } }, entry.displayName),
+        custom ? (0, import_react2.createElement)("span", { style: { ...styles.muted, border: "1px solid var(--dsw-alias-border-l2,#e5e7eb)", borderRadius: 999, padding: "1px 8px", fontSize: 11 } }, "\u81EA\u5B9A\u4E49 | Custom") : null,
+        (0, import_react2.createElement)("span", { style: styles.muted }, entry.provider),
+        (0, import_react2.createElement)(
+          "span",
+          { style: { marginLeft: "auto", display: "flex", gap: 6 } },
+          (0, import_react2.createElement)("button", {
+            style: { ...styles.btn, height: 26, padding: "0 10px", fontSize: 12 },
+            onClick: () => {
+              setAdding(false);
+              setEditing(open ? null : { provider: entry.provider, keyDraft: "", baseURL: profile?.baseURL ?? "" });
+            }
+          }, open ? "\u6536\u8D77" : "\u7F16\u8F91"),
+          custom && data.writable ? (0, import_react2.createElement)("button", {
+            style: { ...styles.btn, height: 26, padding: "0 10px", fontSize: 12, color: "var(--dsw-alias-state-error-primary,#dc2626)" },
+            disabled: busy,
+            onClick: () => {
+              void removeProvider(entry);
+            }
+          }, "\u5220\u9664") : null
+        )
+      ),
+      (0, import_react2.createElement)(
+        "div",
+        { style: { ...styles.muted, marginTop: 3 } },
+        keyRef ? cred?.configured === true ? "\u{1F511} API \u5BC6\u94A5\u5DF2\u914D\u7F6E" : "\u{1F511} API \u5BC6\u94A5\u672A\u914D\u7F6E" : "\u6B64\u63D0\u4F9B\u65B9\u65E0\u9700\u5BC6\u94A5",
+        profile?.baseURL ? " \xB7 " + profile.baseURL : ""
+      ),
+      open ? (0, import_react2.createElement)(
+        "div",
+        { style: { marginTop: 8, display: "flex", flexDirection: "column", gap: 8 } },
+        keyRef || entry.settingsPath.length === 0 ? (0, import_react2.createElement)(
+          "label",
+          { style: { fontSize: 12, display: "flex", flexDirection: "column", gap: 4 } },
+          "API \u5BC6\u94A5\uFF08\u7559\u7A7A\u4FDD\u6301\u4E0D\u53D8\uFF09| API key",
+          (0, import_react2.createElement)("input", {
+            type: "password",
+            value: editing.keyDraft,
+            placeholder: cred?.configured === true ? "\u5DF2\u914D\u7F6E\u2014\u2014\u8F93\u5165\u65B0\u503C\u53EF\u66FF\u6362" : "\u8F93\u5165 API \u5BC6\u94A5",
+            style: styles.input,
+            onChange: (e) => setEditing({ ...editing, keyDraft: e.target.value })
+          })
+        ) : null,
+        (0, import_react2.createElement)(
+          "label",
+          { style: { fontSize: 12, display: "flex", flexDirection: "column", gap: 4 } },
+          "API \u5730\u5740\uFF08\u7559\u7A7A\u4FDD\u6301\u4E0D\u53D8\uFF09| Base URL",
+          (0, import_react2.createElement)("input", {
+            value: editing.baseURL,
+            placeholder: "https://api.example.com/v1",
+            style: styles.input,
+            onChange: (e) => setEditing({ ...editing, baseURL: e.target.value })
+          })
+        ),
+        (0, import_react2.createElement)(
+          "div",
+          null,
+          (0, import_react2.createElement)(
+            "button",
+            { style: styles.primary, disabled: busy || !data.writable, onClick: () => {
+              void saveEdit();
+            } },
+            busy ? "\u4FDD\u5B58\u4E2D\u2026" : "\u4FDD\u5B58 | Save"
+          )
+        )
+      ) : null
+    );
+  };
   return (0, import_react2.createElement)(
     "div",
     { style: styles.card },
     (0, import_react2.createElement)(
       "div",
       { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 } },
-      (0, import_react2.createElement)("strong", null, "\u{1F4E1} \u63D0\u4F9B\u65B9\u76EE\u5F55 | Provider directory"),
+      (0, import_react2.createElement)("strong", null, "\u{1F916} \u6A21\u578B\u7BA1\u7406 | Models"),
       (0, import_react2.createElement)(
         "button",
         { style: { ...styles.btn, height: 28, padding: "0 12px", fontSize: 12 }, onClick: load, disabled: busy },
@@ -1629,28 +1804,15 @@ function ProviderDirectoryTab({ api }) {
     (0, import_react2.createElement)(
       "div",
       { style: { ...styles.muted, marginTop: 4 } },
-      "\u53EA\u8BFB\u76EE\u5F55\uFF1AAPI \u5BC6\u94A5\u4E0E\u6A21\u578B\u914D\u7F6E\u8BF7\u5728\u672C\u673A\u6253\u5F00\u300C\u6A21\u578B\u300D\u9875\u7BA1\u7406 | Read-only listing \u2014 manage API keys on the host's Models page"
+      data && data.writable === false ? "\u26A0\uFE0F \u5F53\u524D\u90E8\u7F72\u8BBE\u7F6E\u53EA\u8BFB\uFF0C\u4EC5\u53EF\u67E5\u770B" : "\u5728\u624B\u673A\u4E0A\u914D\u7F6E\u63D0\u4F9B\u65B9\u3001API \u5BC6\u94A5\u4E0E\u5730\u5740\uFF08\u4EC5\u5C40\u57DF\u7F51\u53EF\u7528\uFF09"
     ),
-    error ? (0, import_react2.createElement)("div", { style: { color: "var(--dsw-alias-state-error-primary,#dc2626)", fontSize: 12, marginTop: 10 } }, `\u274C ${error}`) : null,
-    providers === null && !error ? (0, import_react2.createElement)("div", { style: { ...styles.muted, marginTop: 10 } }, "\u52A0\u8F7D\u4E2D\u2026 | loading\u2026") : null,
-    Array.isArray(providers) ? providers.length === 0 ? (0, import_react2.createElement)("div", { style: { ...styles.muted, marginTop: 10 } }, "\u76EE\u5F55\u4E3A\u7A7A | no providers declared") : (0, import_react2.createElement)(
+    notice ? (0, import_react2.createElement)("div", { style: { fontSize: 12, marginTop: 8, wordBreak: "break-all" } }, notice) : null,
+    error ? (0, import_react2.createElement)("div", { style: { color: "var(--dsw-alias-state-error-primary,#dc2626)", fontSize: 12, marginTop: 10 } }, "\u274C " + error) : null,
+    data === null && !error ? (0, import_react2.createElement)("div", { style: { ...styles.muted, marginTop: 10 } }, "\u52A0\u8F7D\u4E2D\u2026 | loading\u2026") : null,
+    data ? (0, import_react2.createElement)(
       "div",
       { style: { marginTop: 10 } },
-      providers.map((entry) => (0, import_react2.createElement)(
-        "div",
-        {
-          key: entry.provider,
-          style: { display: "flex", alignItems: "center", gap: 8, padding: "7px 0", borderTop: "1px solid var(--dsw-alias-border-l2,#e5e7eb)", fontSize: 13 }
-        },
-        // 启用状态点：绿=适配器在用；灰=已声明未启用
-        (0, import_react2.createElement)("span", {
-          title: entry.active ? "\u542F\u7528\u4E2D | active" : "\u672A\u542F\u7528 | inactive",
-          style: { color: entry.active ? "var(--dsw-alias-state-success-primary,#16a34a)" : "var(--dsw-alias-label-tertiary,#8b93a1)", fontSize: 11 }
-        }, "\u25CF"),
-        (0, import_react2.createElement)("span", { style: { fontWeight: 500 } }, entry.displayName),
-        entry.declared === true ? (0, import_react2.createElement)("span", { style: { ...styles.muted, border: "1px solid var(--dsw-alias-border-l2,#e5e7eb)", borderRadius: 999, padding: "1px 8px", fontSize: 11 } }, "\u81EA\u5B9A\u4E49 | Custom") : null,
-        (0, import_react2.createElement)("span", { style: styles.muted }, entry.provider)
-      ))
+      data.providers.length === 0 ? (0, import_react2.createElement)("div", { style: styles.muted }, "\u6682\u65E0\u63D0\u4F9B\u65B9") : data.providers.map(rowOf)
     ) : null
   );
 }
@@ -1676,12 +1838,12 @@ function apply(ctx) {
     () => ctx.slots.register(
       {
         name: "settings.section",
-        id: "pocket-providers",
+        id: "pocket-models",
         order: 2,
-        label: () => "\u63D0\u4F9B\u65B9\u76EE\u5F55",
+        label: () => "\u6A21\u578B\u7BA1\u7406",
         inject: () => ({ api })
       },
-      ProviderDirectoryTab
+      ModelsManagerTab
     )
   );
 }

@@ -29,6 +29,7 @@ const styles = {
   btn: { font: 'inherit', cursor: 'pointer', border: '1px solid var(--dsw-alias-button-ghost-active-border, var(--dsw-alias-border-l2,#d1d5db))', background: 'var(--dsw-alias-bg-layer-1,#fff)', color: 'var(--dsw-alias-label-primary,inherit)', height: 36, padding: '0 16px', borderRadius: 999, fontSize: 13, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' },
   qr: { width: 220, height: 220, borderRadius: 10, border: '1px solid var(--dsw-alias-border-l2,#e5e7eb)', margin: '8px 0' },
   warn: { color: 'var(--dsw-alias-state-warn-primary,#b45309)', fontSize: 12, lineHeight: 1.5 },
+  input: { font: 'inherit', fontSize: 13, padding: '8px 10px', border: '1px solid var(--dsw-alias-border-l2,#d1d5db)', borderRadius: 8, background: 'var(--dsw-alias-bg-layer-1,#fff)', color: 'var(--dsw-alias-label-primary,inherit)', width: '100%', boxSizing: 'border-box' },
 };
 
 function PocketSettingsTab({ rpcCall }) {
@@ -314,24 +315,59 @@ function PocketSettingsTab({ rpcCall }) {
   );
 }
 
-// 提供方目录（只读）：llm.providers 是普通 RPC，局域网/公网代理下也能应答，
-// 而核心「模型」页依赖的设置文档读取是 loopback-only——远程打开必然报
-// 「加载提供方目录失败」。这里补一个任何访问方式都能看的只读目录；
-// 密钥与配置仍归本机的「模型」页管。
-function ProviderDirectoryTab({ api }) {
-  const [providers, setProviders] = useState(null);
+// 模型管理（LAN 全功能）：核心「模型」页的客户端按页面 hostname 判定 loopback，
+// 经 pocket 代理打开的远程页面被它判为不可用；而代理已把 RPC 通道洗成 loopback，
+// 服务端全通。这里直接用 connection.api 调配置面 RPC（契约与核心模型页一致），
+// 让手机/LAN 也能配 provider、存 API key、添加自定义 provider。
+// 安全边界：公网隧道流量在代理层被拦（lib/proxy.mjs tunnelRpcGuard）——模型管理仅限局域网。
+const LLm_NS_FILTER = (ns) => typeof ns === 'string' && ns.startsWith('llm-');
+
+/** 模型约定引用名（与核心 deriveKeyRef 一致）：provider 大写、非字母数字转下划线。 */
+function deriveKeyRef(provider) {
+  return provider.toUpperCase().replace(/[^A-Z0-9]+/g, '_') + '_API_KEY';
+}
+
+/** RpcResponse 信封解包：{ rpcId, result: { ok, value | error } } → value 或 throw。 */
+async function unwrap(promise, what) {
+  const res = await promise;
+  if (!res?.result?.ok) throw new Error(res?.result?.error?.message ?? what + ' failed');
+  return res.result.value;
+}
+
+function ModelsManagerTab({ api }) {
+  const [data, setData] = useState(null); // { providers, namespaces, writable, credentials }
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState(null); // 操作结果提示
+  const [editing, setEditing] = useState(null); // { provider, keyDraft, baseURL }
+  const [adding, setAdding] = useState(false);
 
   const load = async () => {
-    setBusy(true);
-    setError(null);
+    setBusy(true); setError(null);
     try {
-      // IApiClient 方法返回 RpcResponse 信封：{ rpcId, result: { ok, value | error } }
-      // （与核心模型页 store 的解包一致），不是裸业务对象。
-      const res = await api.llm.providers({});
-      if (!res?.result?.ok) throw new Error(res?.result?.error?.message ?? 'RPC failed');
-      setProviders(res.result.value.providers ?? []);
+      const [directory, settingsDoc] = await Promise.all([
+        unwrap(api.llm.providers({}), 'llm.providers'),
+        unwrap(api.settings.describe({}), 'settings.describe'),
+      ]);
+      const providers = directory.providers ?? [];
+      const llmNamespaces = (settingsDoc.namespaces ?? []).filter((n) => LLm_NS_FILTER(n.ns));
+      const nsByNs = new Map(llmNamespaces.map((n) => [n.ns, n]));
+      // 收集 key 引用：目录各 provider 的 apiKeyEnv（配置里的）或约定名
+      const refs = [...new Set(providers.map((p) => {
+        const ns = nsByNs.get(p.settingsNs);
+        const profile = p.settingsPath.length === 0
+          ? ns?.value
+          : ns?.value?.providers?.[p.provider];
+        return profile?.apiKeyEnv ?? (p.settingsPath.length > 0 ? deriveKeyRef(p.provider) : null);
+      }).filter(Boolean))];
+      let credentials = {};
+      if (refs.length > 0) {
+        try {
+          const cred = await unwrap(api.credentials.describe({ refs }), 'credentials.describe');
+          credentials = cred.credentials ?? {};
+        } catch { /* key 状态是增强信息，失败不阻塞目录 */ }
+      }
+      setData({ providers, namespaces: nsByNs, writable: settingsDoc.writable !== false, credentials });
     } catch (err) {
       setError(err?.message ?? String(err));
     } finally {
@@ -341,36 +377,145 @@ function ProviderDirectoryTab({ api }) {
 
   useEffect(() => { load(); }, []);
 
+  /** 保存一个 provider 的编辑：key（若有输入）→ credentials.set；baseURL → settings.mutate。 */
+  const saveEdit = async () => {
+    if (!editing) return;
+    setBusy(true); setNotice(null);
+    try {
+      const entry = data.providers.find((p) => p.provider === editing.provider);
+      const ns = data.namespaces.get(entry.settingsNs);
+      const revision = ns?.revision ?? 0;
+      const key = editing.keyDraft.trim();
+      if (key.length > 0) {
+        const ref = deriveKeyRef(editing.provider);
+        await unwrap(api.credentials.set({ ref, value: key }), 'credentials.set');
+        // 确保配置引用了这个约定名（官方 ns 的 profile 可能没写 apiKeyEnv）
+        if (entry.settingsPath.length === 0 && ns?.value?.apiKeyEnv !== ref) {
+          await unwrap(api.settings.mutate({
+            ns: entry.settingsNs,
+            ops: [{ op: 'set', path: ['apiKeyEnv'], value: ref }],
+            expectedRevision: revision,
+          }), 'settings.mutate');
+        }
+      }
+      if (editing.baseURL !== undefined && editing.baseURL.trim() !== '') {
+        const base = entry.settingsPath.length === 0 ? [] : entry.settingsPath;
+        await unwrap(api.settings.mutate({
+          ns: entry.settingsNs,
+          ops: [{ op: 'set', path: [...base, 'baseURL'], value: editing.baseURL.trim() }],
+          expectedRevision: revision,
+        }), 'settings.mutate');
+      }
+      setNotice('✅ 已保存 ' + editing.provider);
+      setEditing(null);
+      await load();
+    } catch (err) {
+      setNotice('❌ ' + (err?.message ?? String(err)));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** 删除自定义 provider 配置（仅 user 层有的；官方 provider 不允许删）。 */
+  const removeProvider = async (entry) => {
+    setBusy(true); setNotice(null);
+    try {
+      const ns = data.namespaces.get(entry.settingsNs);
+      if (!ns?.user || entry.settingsPath.length === 0) throw new Error('仅自定义 provider 可删除');
+      await unwrap(api.settings.mutate({
+        ns: entry.settingsNs,
+        ops: [{ op: 'unset', path: entry.settingsPath }],
+        expectedRevision: ns.revision ?? 0,
+      }), 'settings.mutate');
+      setNotice('🗑️ 已删除 ' + entry.provider);
+      await load();
+    } catch (err) {
+      setNotice('❌ ' + (err?.message ?? String(err)));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const rowOf = (entry) => {
+    const ns = data.namespaces.get(entry.settingsNs);
+    const profile = entry.settingsPath.length === 0 ? ns?.value : ns?.value?.providers?.[entry.provider];
+    const keyRef = profile?.apiKeyEnv ?? (entry.settingsPath.length > 0 ? deriveKeyRef(entry.provider) : null);
+    const cred = keyRef ? data.credentials[keyRef] : null;
+    const custom = entry.declared === true || entry.settingsPath.length > 0;
+    const open = editing?.provider === entry.provider;
+    return h('div', {
+      key: entry.provider,
+      style: { padding: '10px 0', borderTop: '1px solid var(--dsw-alias-border-l2,#e5e7eb)' },
+    },
+      h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 } },
+        h('span', {
+          title: entry.active ? '启用中 | active' : '未启用 | inactive',
+          style: { color: entry.active ? 'var(--dsw-alias-state-success-primary,#16a34a)' : 'var(--dsw-alias-label-tertiary,#8b93a1)', fontSize: 11 },
+        }, '●'),
+        h('span', { style: { fontWeight: 500 } }, entry.displayName),
+        custom ? h('span', { style: { ...styles.muted, border: '1px solid var(--dsw-alias-border-l2,#e5e7eb)', borderRadius: 999, padding: '1px 8px', fontSize: 11 } }, '自定义 | Custom') : null,
+        h('span', { style: styles.muted }, entry.provider),
+        h('span', { style: { marginLeft: 'auto', display: 'flex', gap: 6 } },
+          h('button', {
+            style: { ...styles.btn, height: 26, padding: '0 10px', fontSize: 12 },
+            onClick: () => { setAdding(false); setEditing(open ? null : { provider: entry.provider, keyDraft: '', baseURL: profile?.baseURL ?? '' }); },
+          }, open ? '收起' : '编辑'),
+          custom && data.writable ? h('button', {
+            style: { ...styles.btn, height: 26, padding: '0 10px', fontSize: 12, color: 'var(--dsw-alias-state-error-primary,#dc2626)' },
+            disabled: busy,
+            onClick: () => { void removeProvider(entry); },
+          }, '删除') : null,
+        ),
+      ),
+      h('div', { style: { ...styles.muted, marginTop: 3 } },
+        keyRef ? (cred?.configured === true ? '🔑 API 密钥已配置' : '🔑 API 密钥未配置') : '此提供方无需密钥',
+        profile?.baseURL ? ' · ' + profile.baseURL : '',
+      ),
+      open ? h('div', { style: { marginTop: 8, display: 'flex', flexDirection: 'column', gap: 8 } },
+        keyRef || entry.settingsPath.length === 0 ? h('label', { style: { fontSize: 12, display: 'flex', flexDirection: 'column', gap: 4 } },
+          'API 密钥（留空保持不变）| API key',
+          h('input', {
+            type: 'password',
+            value: editing.keyDraft,
+            placeholder: cred?.configured === true ? '已配置——输入新值可替换' : '输入 API 密钥',
+            style: styles.input,
+            onChange: (e) => setEditing({ ...editing, keyDraft: e.target.value }),
+          }),
+        ) : null,
+        h('label', { style: { fontSize: 12, display: 'flex', flexDirection: 'column', gap: 4 } },
+          'API 地址（留空保持不变）| Base URL',
+          h('input', {
+            value: editing.baseURL,
+            placeholder: 'https://api.example.com/v1',
+            style: styles.input,
+            onChange: (e) => setEditing({ ...editing, baseURL: e.target.value }),
+          }),
+        ),
+        h('div', null,
+          h('button', { style: styles.primary, disabled: busy || !data.writable, onClick: () => { void saveEdit(); } },
+            busy ? '保存中…' : '保存 | Save'),
+        ),
+      ) : null,
+    );
+  };
+
   return h('div', { style: styles.card },
     h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 } },
-      h('strong', null, '📡 提供方目录 | Provider directory'),
+      h('strong', null, '🤖 模型管理 | Models'),
       h('button', { style: { ...styles.btn, height: 28, padding: '0 12px', fontSize: 12 }, onClick: load, disabled: busy },
         busy ? '加载中…' : '刷新 | Refresh'),
     ),
     h('div', { style: { ...styles.muted, marginTop: 4 } },
-      '只读目录：API 密钥与模型配置请在本机打开「模型」页管理 | Read-only listing — manage API keys on the host\'s Models page'),
+      data && data.writable === false ? '⚠️ 当前部署设置只读，仅可查看' : '在手机上配置提供方、API 密钥与地址（仅局域网可用）'),
 
-    error ? h('div', { style: { color: 'var(--dsw-alias-state-error-primary,#dc2626)', fontSize: 12, marginTop: 10 } }, `❌ ${error}`) : null,
+    notice ? h('div', { style: { fontSize: 12, marginTop: 8, wordBreak: 'break-all' } }, notice) : null,
+    error ? h('div', { style: { color: 'var(--dsw-alias-state-error-primary,#dc2626)', fontSize: 12, marginTop: 10 } }, '❌ ' + error) : null,
 
-    providers === null && !error ? h('div', { style: { ...styles.muted, marginTop: 10 } }, '加载中… | loading…') : null,
-    Array.isArray(providers) ? (
-      providers.length === 0
-        ? h('div', { style: { ...styles.muted, marginTop: 10 } }, '目录为空 | no providers declared')
-        : h('div', { style: { marginTop: 10 } },
-          providers.map((entry) => h('div', {
-            key: entry.provider,
-            style: { display: 'flex', alignItems: 'center', gap: 8, padding: '7px 0', borderTop: '1px solid var(--dsw-alias-border-l2,#e5e7eb)', fontSize: 13 },
-          },
-            // 启用状态点：绿=适配器在用；灰=已声明未启用
-            h('span', {
-              title: entry.active ? '启用中 | active' : '未启用 | inactive',
-              style: { color: entry.active ? 'var(--dsw-alias-state-success-primary,#16a34a)' : 'var(--dsw-alias-label-tertiary,#8b93a1)', fontSize: 11 },
-            }, '●'),
-            h('span', { style: { fontWeight: 500 } }, entry.displayName),
-            entry.declared === true ? h('span', { style: { ...styles.muted, border: '1px solid var(--dsw-alias-border-l2,#e5e7eb)', borderRadius: 999, padding: '1px 8px', fontSize: 11 } }, '自定义 | Custom') : null,
-            h('span', { style: styles.muted }, entry.provider),
-          )),
-        )
+    data === null && !error ? h('div', { style: { ...styles.muted, marginTop: 10 } }, '加载中… | loading…') : null,
+    data ? h('div', { style: { marginTop: 10 } },
+      data.providers.length === 0
+        ? h('div', { style: styles.muted }, '暂无提供方')
+        : data.providers.map(rowOf),
     ) : null,
   );
 }
@@ -403,12 +548,12 @@ export function apply(ctx) {
     ctx.slots.register(
       {
         name: 'settings.section',
-        id: 'pocket-providers',
+        id: 'pocket-models',
         order: 2,
-        label: () => '提供方目录',
+        label: () => '模型管理',
         inject: () => ({ api }),
       },
-      ProviderDirectoryTab,
+      ModelsManagerTab,
     ),
   );
 }
