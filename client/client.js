@@ -1785,7 +1785,8 @@ var styles = {
   // 次级按钮：官方 outline/ghost 胶囊形
   btn: { font: "inherit", cursor: "pointer", border: "1px solid var(--dsw-alias-button-ghost-active-border, var(--dsw-alias-border-l2,#d1d5db))", background: "var(--dsw-alias-bg-layer-1,#fff)", color: "var(--dsw-alias-label-primary,inherit)", height: 36, padding: "0 16px", borderRadius: 999, fontSize: 13, display: "inline-flex", alignItems: "center", justifyContent: "center" },
   qr: { width: 220, height: 220, borderRadius: 10, border: "1px solid var(--dsw-alias-border-l2,#e5e7eb)", margin: "8px 0" },
-  warn: { color: "var(--dsw-alias-state-warn-primary,#b45309)", fontSize: 12, lineHeight: 1.5 }
+  warn: { color: "var(--dsw-alias-state-warn-primary,#b45309)", fontSize: 12, lineHeight: 1.5 },
+  input: { font: "inherit", fontSize: 13, padding: "8px 10px", border: "1px solid var(--dsw-alias-border-l2,#d1d5db)", borderRadius: 8, background: "var(--dsw-alias-bg-layer-1,#fff)", color: "var(--dsw-alias-label-primary,inherit)", width: "100%", boxSizing: "border-box" }
 };
 function PocketSettingsTab({ rpcCall, t }) {
   const [status, setStatus] = (0, import_react2.useState)(null);
@@ -2414,6 +2415,574 @@ function PocketSettingsTab({ rpcCall, t }) {
     )
   );
 }
+var LLm_NS_FILTER = (ns) => typeof ns === "string" && ns.startsWith("llm-");
+function deriveKeyRef(provider) {
+  return provider.toUpperCase().replace(/[^A-Z0-9]+/g, "_") + "_API_KEY";
+}
+async function unwrap(promise, what) {
+  const res = await promise;
+  if (!res?.result?.ok) throw new Error(res?.result?.error?.message ?? what + " failed");
+  return res.result.value;
+}
+function ModelsManagerTab({ api }) {
+  const [data, setData] = (0, import_react2.useState)(null);
+  const [error, setError] = (0, import_react2.useState)(null);
+  const [busy, setBusy] = (0, import_react2.useState)(false);
+  const [notice, setNotice] = (0, import_react2.useState)(null);
+  const [editing, setEditing] = (0, import_react2.useState)(null);
+  const [adding, setAdding] = (0, import_react2.useState)(null);
+  const load = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const [directory, settingsDoc] = await Promise.all([
+        unwrap(api.llm.providers({}), "llm.providers"),
+        unwrap(api.settings.describe({}), "settings.describe")
+      ]);
+      const providers = directory.providers ?? [];
+      const llmNamespaces = (settingsDoc.namespaces ?? []).filter((n) => LLm_NS_FILTER(n.ns));
+      const nsByNs = new Map(llmNamespaces.map((n) => [n.ns, n]));
+      const refs = [...new Set(providers.map((p) => {
+        const ns = nsByNs.get(p.settingsNs);
+        const profile = p.settingsPath.length === 0 ? ns?.value : ns?.value?.providers?.[p.provider];
+        return profile?.apiKeyEnv ?? (p.settingsPath.length > 0 ? deriveKeyRef(p.provider) : null);
+      }).filter(Boolean))];
+      let credentials = {};
+      if (refs.length > 0) {
+        try {
+          const cred = await unwrap(api.credentials.describe({ refs }), "credentials.describe");
+          credentials = cred.credentials ?? {};
+        } catch {
+        }
+      }
+      setData({ providers, namespaces: nsByNs, writable: settingsDoc.writable !== false, credentials });
+    } catch (err) {
+      setError(err?.message ?? String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  (0, import_react2.useEffect)(() => {
+    load();
+  }, []);
+  const saveEdit = async () => {
+    if (!editing) return;
+    setBusy(true);
+    setNotice(null);
+    try {
+      const entry = data.providers.find((p) => p.provider === editing.provider);
+      const ns = data.namespaces.get(entry.settingsNs);
+      const revision = ns?.revision ?? 0;
+      const base = entry.settingsPath.length === 0 ? [] : entry.settingsPath;
+      const ops = [];
+      const key = editing.keyDraft.trim();
+      if (key.length > 0) {
+        const ref = deriveKeyRef(editing.provider);
+        await unwrap(api.credentials.set({ ref, value: key }), "credentials.set");
+        if (entry.settingsPath.length === 0 && ns?.value?.apiKeyEnv !== ref) {
+          ops.push({ op: "set", path: ["apiKeyEnv"], value: ref });
+        }
+      }
+      if (editing.baseURL !== void 0 && editing.baseURL.trim() !== "") {
+        ops.push({ op: "set", path: [...base, "baseURL"], value: editing.baseURL.trim() });
+      }
+      if (editing.modelsTouched) {
+        if ((editing.models ?? []).length === 0) ops.push({ op: "unset", path: [...base, "models"] });
+        else ops.push({ op: "set", path: [...base, "models"], value: editing.models.map((m) => ({ ...m })) });
+      }
+      if (ops.length > 0) {
+        await unwrap(api.settings.mutate({
+          ns: entry.settingsNs,
+          ops,
+          expectedRevision: revision
+        }), "settings.mutate");
+      }
+      setNotice("\u2705 \u5DF2\u4FDD\u5B58 " + editing.provider);
+      setEditing(null);
+      await load();
+    } catch (err) {
+      setNotice("\u274C " + (err?.message ?? String(err)));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const removeProvider = async (entry) => {
+    setBusy(true);
+    setNotice(null);
+    try {
+      const ns = data.namespaces.get(entry.settingsNs);
+      if (!ns?.user || entry.settingsPath.length === 0) throw new Error("\u4EC5\u81EA\u5B9A\u4E49 provider \u53EF\u5220\u9664");
+      await unwrap(api.settings.mutate({
+        ns: entry.settingsNs,
+        ops: [{ op: "unset", path: entry.settingsPath }],
+        expectedRevision: ns.revision ?? 0
+      }), "settings.mutate");
+      setNotice("\u{1F5D1}\uFE0F \u5DF2\u5220\u9664 " + entry.provider);
+      await load();
+    } catch (err) {
+      setNotice("\u274C " + (err?.message ?? String(err)));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const createProvider = async () => {
+    if (!adding) return;
+    setBusy(true);
+    setNotice(null);
+    try {
+      const route = adding.route.trim().toLowerCase();
+      if (!/^[a-z][a-z0-9-]*$/.test(route)) throw new Error("\u8DEF\u7531 ID\uFF1A\u5C0F\u5199\u5B57\u6BCD\u5F00\u5934\uFF0C\u4EC5\u5C0F\u5199\u5B57\u6BCD/\u6570\u5B57/\u8FDE\u5B57\u7B26");
+      if ((data.providers ?? []).some((p) => p.provider === route)) throw new Error("\u8DEF\u7531 ID \u5DF2\u88AB\u5360\u7528\uFF1A" + route);
+      const baseURL = adding.baseURL.trim();
+      if (baseURL.length === 0) throw new Error("\u81EA\u5B9A\u4E49 provider \u9700\u8981 API \u5730\u5740");
+      const models = (adding.models ?? []).filter((m) => (m.id ?? "").trim() !== "");
+      if (models.length === 0) throw new Error("\u81EA\u5B9A\u4E49 provider \u81F3\u5C11\u9700\u8981\u4E00\u4E2A\u6A21\u578B\uFF08\u53EF\u5148\u62C9\u53D6\uFF09");
+      const key = adding.keyDraft.trim();
+      const ref = deriveKeyRef(route);
+      const ns = data.namespaces.get("llm-pi-ai");
+      const profile = {
+        ...adding.displayName.trim().length > 0 ? { displayName: adding.displayName.trim() } : {},
+        ...key.length > 0 ? { apiKeyEnv: ref } : {},
+        api: adding.api,
+        baseURL,
+        models: models.map((m) => ({ ...m }))
+      };
+      await unwrap(api.settings.mutate({
+        ns: "llm-pi-ai",
+        ops: [{ op: "set", path: ["providers", route], value: profile }],
+        expectedRevision: ns?.revision ?? 0
+      }), "settings.mutate");
+      if (key.length > 0) {
+        await unwrap(api.credentials.set({ ref, value: key }), "credentials.set");
+      }
+      setNotice("\u2705 \u5DF2\u521B\u5EFA " + route);
+      setAdding(null);
+      await load();
+    } catch (err) {
+      setNotice("\u274C " + (err?.message ?? String(err)));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const rowOf = (entry) => {
+    const ns = data.namespaces.get(entry.settingsNs);
+    const profile = entry.settingsPath.length === 0 ? ns?.value : ns?.value?.providers?.[entry.provider];
+    const keyRef = profile?.apiKeyEnv ?? (entry.settingsPath.length > 0 ? deriveKeyRef(entry.provider) : null);
+    const cred = keyRef ? data.credentials[keyRef] : null;
+    const custom = entry.declared === true || entry.settingsPath.length > 0;
+    const open = editing?.provider === entry.provider;
+    return (0, import_react2.createElement)(
+      "div",
+      {
+        key: entry.provider,
+        style: { padding: "10px 0", borderTop: "1px solid var(--dsw-alias-border-l2,#e5e7eb)" }
+      },
+      (0, import_react2.createElement)(
+        "div",
+        { style: { display: "flex", alignItems: "center", gap: 8, fontSize: 13 } },
+        (0, import_react2.createElement)("span", {
+          title: entry.active ? "\u542F\u7528\u4E2D | active" : "\u672A\u542F\u7528 | inactive",
+          style: { color: entry.active ? "var(--dsw-alias-state-success-primary,#16a34a)" : "var(--dsw-alias-label-tertiary,#8b93a1)", fontSize: 11 }
+        }, "\u25CF"),
+        (0, import_react2.createElement)("span", { style: { fontWeight: 500 } }, entry.displayName),
+        custom ? (0, import_react2.createElement)("span", { style: { ...styles.muted, border: "1px solid var(--dsw-alias-border-l2,#e5e7eb)", borderRadius: 999, padding: "1px 8px", fontSize: 11 } }, "\u81EA\u5B9A\u4E49 | Custom") : null,
+        (0, import_react2.createElement)("span", { style: styles.muted }, entry.provider),
+        (0, import_react2.createElement)(
+          "span",
+          { style: { marginLeft: "auto", display: "flex", gap: 6 } },
+          (0, import_react2.createElement)("button", {
+            style: { ...styles.btn, height: 26, padding: "0 10px", fontSize: 12 },
+            onClick: () => {
+              setAdding(null);
+              if (open) {
+                setEditing(null);
+                return;
+              }
+              const modelsBase = entry.settingsPath.length === 0 ? ns?.value?.models : ns?.value?.providers?.[entry.provider]?.models;
+              const modelsCustomized = entry.settingsPath.length === 0 ? ns?.user && Array.isArray(ns.user.models) : ns?.user?.providers?.[entry.provider]?.models !== void 0;
+              setEditing({
+                provider: entry.provider,
+                keyDraft: "",
+                baseURL: profile?.baseURL ?? "",
+                models: Array.isArray(modelsBase) ? modelsBase.map((m) => ({ ...m })) : [],
+                modelsTouched: false,
+                modelsCustomized: modelsCustomized === true,
+                discovered: null,
+                discovering: false,
+                discoverPicked: []
+              });
+            }
+          }, open ? "\u6536\u8D77" : "\u7F16\u8F91"),
+          custom && data.writable ? (0, import_react2.createElement)("button", {
+            style: { ...styles.btn, height: 26, padding: "0 10px", fontSize: 12, color: "var(--dsw-alias-state-error-primary,#dc2626)" },
+            disabled: busy,
+            onClick: () => {
+              void removeProvider(entry);
+            }
+          }, "\u5220\u9664") : null
+        )
+      ),
+      (0, import_react2.createElement)(
+        "div",
+        { style: { ...styles.muted, marginTop: 3 } },
+        keyRef ? cred?.configured === true ? "\u{1F511} API \u5BC6\u94A5\u5DF2\u914D\u7F6E" : "\u{1F511} API \u5BC6\u94A5\u672A\u914D\u7F6E" : "\u6B64\u63D0\u4F9B\u65B9\u65E0\u9700\u5BC6\u94A5",
+        profile?.baseURL ? " \xB7 " + profile.baseURL : ""
+      ),
+      open ? (0, import_react2.createElement)(
+        "div",
+        { style: { marginTop: 8, display: "flex", flexDirection: "column", gap: 8 } },
+        keyRef || entry.settingsPath.length === 0 ? (0, import_react2.createElement)(
+          "label",
+          { style: { fontSize: 12, display: "flex", flexDirection: "column", gap: 4 } },
+          "API \u5BC6\u94A5\uFF08\u7559\u7A7A\u4FDD\u6301\u4E0D\u53D8\uFF09| API key",
+          (0, import_react2.createElement)("input", {
+            type: "password",
+            value: editing.keyDraft,
+            placeholder: cred?.configured === true ? "\u5DF2\u914D\u7F6E\u2014\u2014\u8F93\u5165\u65B0\u503C\u53EF\u66FF\u6362" : "\u8F93\u5165 API \u5BC6\u94A5",
+            style: styles.input,
+            onChange: (e) => setEditing({ ...editing, keyDraft: e.target.value })
+          })
+        ) : null,
+        (0, import_react2.createElement)(
+          "label",
+          { style: { fontSize: 12, display: "flex", flexDirection: "column", gap: 4 } },
+          "API \u5730\u5740\uFF08\u7559\u7A7A\u4FDD\u6301\u4E0D\u53D8\uFF09| Base URL",
+          (0, import_react2.createElement)("input", {
+            value: editing.baseURL,
+            placeholder: "https://api.example.com/v1",
+            style: styles.input,
+            onChange: (e) => setEditing({ ...editing, baseURL: e.target.value })
+          })
+        ),
+        // ---- 模型目录编辑（与核心页同语义）----
+        (0, import_react2.createElement)(
+          "div",
+          { style: { fontSize: 12, display: "flex", flexDirection: "column", gap: 6 } },
+          (0, import_react2.createElement)(
+            "div",
+            { style: { display: "flex", alignItems: "center", gap: 8 } },
+            (0, import_react2.createElement)("strong", null, "\u6A21\u578B\u76EE\u5F55 | Models"),
+            (0, import_react2.createElement)("span", { style: styles.muted }, editing.modelsCustomized ? "\uFF08\u5DF2\u81EA\u5B9A\u4E49\uFF0C\u751F\u6548\u4E2D\u76EE\u5F55\u5982\u4E0A\uFF09" : "\uFF08\u7EE7\u627F\u63D0\u4F9B\u65B9\u9ED8\u8BA4\uFF09"),
+            (0, import_react2.createElement)("button", {
+              style: { ...styles.btn, height: 24, padding: "0 8px", fontSize: 11 },
+              disabled: editing.discovering,
+              onClick: () => {
+                setEditing({ ...editing, discovering: true });
+                const payload = { settingsNs: entry.settingsNs, provider: entry.provider };
+                const key = editing.keyDraft.trim();
+                if (key.length > 0) payload.apiKey = key;
+                const bURL = editing.baseURL.trim();
+                if (bURL.length > 0) payload.baseURL = bURL;
+                unwrap(api.llm.discoverModels(payload), "llm.discoverModels").then((v) => setEditing((cur) => cur && cur.provider === entry.provider ? { ...cur, discovered: v.models ?? [], discovering: false } : cur)).catch((err) => {
+                  setNotice("\u274C \u62C9\u53D6\u5931\u8D25\uFF1A" + (err?.message ?? err));
+                  setEditing((cur) => cur ? { ...cur, discovering: false } : cur);
+                });
+              }
+            }, editing.discovering ? "\u62C9\u53D6\u4E2D\u2026" : "\u27F3 \u4ECE\u63D0\u4F9B\u65B9\u62C9\u53D6 | Fetch")
+          ),
+          // 当前编辑中的目录（可增删改）
+          (editing.models ?? []).map((m, i) => (0, import_react2.createElement)(
+            "div",
+            { key: i, style: { display: "flex", gap: 4, alignItems: "center" } },
+            (0, import_react2.createElement)("input", {
+              value: m.id,
+              placeholder: "\u6A21\u578B ID",
+              style: { ...styles.input, flex: 2 },
+              onChange: (e) => {
+                const next = [...editing.models];
+                next[i] = { ...m, id: e.target.value };
+                setEditing({ ...editing, models: next, modelsTouched: true });
+              }
+            }),
+            (0, import_react2.createElement)("input", {
+              value: m.name ?? "",
+              placeholder: "\u663E\u793A\u540D(\u53EF\u9009)",
+              style: { ...styles.input, flex: 1.2 },
+              onChange: (e) => {
+                const next = [...editing.models];
+                next[i] = { ...m, name: e.target.value };
+                setEditing({ ...editing, models: next, modelsTouched: true });
+              }
+            }),
+            (0, import_react2.createElement)("input", {
+              value: m.contextWindow ?? "",
+              placeholder: "\u4E0A\u4E0B\u6587",
+              style: { ...styles.input, flex: 0.8 },
+              type: "number",
+              onChange: (e) => {
+                const next = [...editing.models];
+                next[i] = { ...m, contextWindow: e.target.value === "" ? void 0 : Number(e.target.value) };
+                setEditing({ ...editing, models: next, modelsTouched: true });
+              }
+            }),
+            (0, import_react2.createElement)("button", {
+              style: { ...styles.btn, height: 26, padding: "0 8px", fontSize: 11, color: "#dc2626" },
+              onClick: () => setEditing({ ...editing, models: editing.models.filter((_, j) => j !== i), modelsTouched: true })
+            }, "\u2715")
+          )),
+          (0, import_react2.createElement)(
+            "button",
+            {
+              style: { ...styles.btn, height: 26, padding: "0 10px", fontSize: 11 },
+              onClick: () => setEditing({ ...editing, models: [...editing.models ?? [], { id: "" }], modelsTouched: true })
+            },
+            "+ \u624B\u52A8\u6DFB\u52A0\u6A21\u578B"
+          ),
+          editing.modelsTouched && (editing.models ?? []).length === 0 ? (0, import_react2.createElement)("div", { style: styles.muted }, "\u76EE\u5F55\u5DF2\u6E05\u7A7A\u2014\u2014\u4FDD\u5B58\u540E\u7EE7\u627F\u63D0\u4F9B\u65B9\u9ED8\u8BA4\u76EE\u5F55") : null,
+          // 拉取结果：勾选采纳
+          Array.isArray(editing.discovered) && editing.discovered.length > 0 ? (0, import_react2.createElement)(
+            "div",
+            { style: { borderTop: "1px dashed var(--dsw-alias-border-l2,#e5e7eb)", paddingTop: 6, display: "flex", flexDirection: "column", gap: 4 } },
+            (0, import_react2.createElement)("div", { style: styles.muted }, "\u63D0\u4F9B\u65B9\u53EF\u7528\u6A21\u578B\uFF08\u52FE\u9009\u91C7\u7EB3\uFF09\uFF1A"),
+            editing.discovered.map((d) => {
+              const picked = (editing.discoverPicked ?? []).includes(d.id);
+              return (0, import_react2.createElement)(
+                "label",
+                { key: d.id, style: { display: "flex", gap: 6, alignItems: "center", fontSize: 12 } },
+                (0, import_react2.createElement)("input", {
+                  type: "checkbox",
+                  checked: picked,
+                  onChange: () => setEditing({
+                    ...editing,
+                    discoverPicked: picked ? (editing.discoverPicked ?? []).filter((x) => x !== d.id) : [...editing.discoverPicked ?? [], d.id]
+                  })
+                }),
+                (0, import_react2.createElement)("span", null, d.name || d.id, d.contextWindow ? " \uFF08" + d.contextWindow + " ctx\uFF09" : "")
+              );
+            }),
+            (editing.discoverPicked ?? []).length > 0 ? (0, import_react2.createElement)("button", {
+              style: { ...styles.btn, height: 26, padding: "0 10px", fontSize: 11 },
+              onClick: () => {
+                const pickedIds = new Set(editing.discoverPicked ?? []);
+                const existing = new Set((editing.models ?? []).map((m) => m.id));
+                const additions = (editing.discovered ?? []).filter((d) => pickedIds.has(d.id) && !existing.has(d.id)).map((d) => ({ id: d.id, ...d.name ? { name: d.name } : {}, ...d.contextWindow ? { contextWindow: d.contextWindow } : {}, ...d.maxTokens ? { maxTokens: d.maxTokens } : {} }));
+                setEditing({ ...editing, models: [...editing.models ?? [], ...additions], modelsTouched: true, discovered: null, discoverPicked: [] });
+              }
+            }, "\u91C7\u7EB3\u52FE\u9009 (" + (editing.discoverPicked ?? []).length + ")") : null
+          ) : null
+        ),
+        (0, import_react2.createElement)(
+          "div",
+          null,
+          (0, import_react2.createElement)(
+            "button",
+            { style: styles.primary, disabled: busy || !data.writable, onClick: () => {
+              void saveEdit();
+            } },
+            busy ? "\u4FDD\u5B58\u4E2D\u2026" : "\u4FDD\u5B58 | Save"
+          )
+        )
+      ) : null
+    );
+  };
+  return (0, import_react2.createElement)(
+    "div",
+    { style: styles.card },
+    (0, import_react2.createElement)(
+      "div",
+      { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 } },
+      (0, import_react2.createElement)("strong", null, "\u{1F916} \u6A21\u578B\u7BA1\u7406 | Models"),
+      (0, import_react2.createElement)(
+        "button",
+        { style: { ...styles.btn, height: 28, padding: "0 12px", fontSize: 12 }, onClick: load, disabled: busy },
+        busy ? "\u52A0\u8F7D\u4E2D\u2026" : "\u5237\u65B0 | Refresh"
+      )
+    ),
+    (0, import_react2.createElement)(
+      "div",
+      { style: { ...styles.muted, marginTop: 4 } },
+      data && data.writable === false ? "\u26A0\uFE0F \u5F53\u524D\u90E8\u7F72\u8BBE\u7F6E\u53EA\u8BFB\uFF0C\u4EC5\u53EF\u67E5\u770B" : "\u5728\u624B\u673A\u4E0A\u914D\u7F6E\u63D0\u4F9B\u65B9\u3001API \u5BC6\u94A5\u4E0E\u5730\u5740\uFF08\u4EC5\u5C40\u57DF\u7F51\u53EF\u7528\uFF09"
+    ),
+    notice ? (0, import_react2.createElement)("div", { style: { fontSize: 12, marginTop: 8, wordBreak: "break-all" } }, notice) : null,
+    error ? (0, import_react2.createElement)("div", { style: { color: "var(--dsw-alias-state-error-primary,#dc2626)", fontSize: 12, marginTop: 10 } }, "\u274C " + error) : null,
+    data === null && !error ? (0, import_react2.createElement)("div", { style: { ...styles.muted, marginTop: 10 } }, "\u52A0\u8F7D\u4E2D\u2026 | loading\u2026") : null,
+    data ? (0, import_react2.createElement)(
+      "div",
+      { style: { marginTop: 10 } },
+      data.providers.length === 0 ? (0, import_react2.createElement)("div", { style: styles.muted }, "\u6682\u65E0\u63D0\u4F9B\u65B9") : data.providers.map(rowOf)
+    ) : null,
+    // ---- 添加自定义 provider（与核心 CustomProviderCard 同契约）----
+    data && data.writable ? (0, import_react2.createElement)(
+      "div",
+      { style: { ...styles.block, marginTop: 16 } },
+      adding === null ? (0, import_react2.createElement)(
+        "button",
+        { style: styles.btn, onClick: () => {
+          setEditing(null);
+          setAdding({ route: "", displayName: "", baseURL: "", api: "openai", keyDraft: "", models: [], discovered: null, discovering: false, discoverPicked: [] });
+        } },
+        "\uFF0B \u6DFB\u52A0\u81EA\u5B9A\u4E49 provider | Add custom provider"
+      ) : (0, import_react2.createElement)(
+        "div",
+        { style: { display: "flex", flexDirection: "column", gap: 8 } },
+        (0, import_react2.createElement)(
+          "div",
+          { style: { display: "flex", alignItems: "center", justifyContent: "space-between" } },
+          (0, import_react2.createElement)("strong", null, "\u65B0\u5EFA\u81EA\u5B9A\u4E49 provider"),
+          (0, import_react2.createElement)("button", { style: { ...styles.btn, height: 26, padding: "0 10px", fontSize: 12 }, onClick: () => setAdding(null) }, "\u53D6\u6D88")
+        ),
+        (0, import_react2.createElement)(
+          "label",
+          { style: { fontSize: 12, display: "flex", flexDirection: "column", gap: 4 } },
+          "\u8DEF\u7531 ID\uFF08\u5C0F\u5199\u5B57\u6BCD\u5F00\u5934\uFF0C\u552F\u4E00\uFF09",
+          (0, import_react2.createElement)("input", {
+            value: adding.route,
+            placeholder: "my-provider",
+            style: styles.input,
+            onChange: (e) => setAdding({ ...adding, route: e.target.value })
+          })
+        ),
+        (0, import_react2.createElement)(
+          "label",
+          { style: { fontSize: 12, display: "flex", flexDirection: "column", gap: 4 } },
+          "\u663E\u793A\u540D\u79F0\uFF08\u53EF\u9009\uFF09",
+          (0, import_react2.createElement)("input", {
+            value: adding.displayName,
+            placeholder: "My Provider",
+            style: styles.input,
+            onChange: (e) => setAdding({ ...adding, displayName: e.target.value })
+          })
+        ),
+        (0, import_react2.createElement)(
+          "label",
+          { style: { fontSize: 12, display: "flex", flexDirection: "column", gap: 4 } },
+          "API \u534F\u8BAE",
+          (0, import_react2.createElement)(
+            "select",
+            {
+              value: adding.api,
+              style: styles.input,
+              onChange: (e) => setAdding({ ...adding, api: e.target.value })
+            },
+            (0, import_react2.createElement)("option", { value: "openai" }, "OpenAI \u517C\u5BB9"),
+            (0, import_react2.createElement)("option", { value: "anthropic" }, "Anthropic \u517C\u5BB9")
+          )
+        ),
+        (0, import_react2.createElement)(
+          "label",
+          { style: { fontSize: 12, display: "flex", flexDirection: "column", gap: 4 } },
+          "API \u5730\u5740",
+          (0, import_react2.createElement)("input", {
+            value: adding.baseURL,
+            placeholder: "https://api.example.com/v1",
+            style: styles.input,
+            onChange: (e) => setAdding({ ...adding, baseURL: e.target.value })
+          })
+        ),
+        (0, import_react2.createElement)(
+          "label",
+          { style: { fontSize: 12, display: "flex", flexDirection: "column", gap: 4 } },
+          "API \u5BC6\u94A5\uFF08\u53EF\u7559\u7A7A\u2014\u2014\u82E5\u8BE5\u670D\u52A1\u65E0\u9700\u9274\u6743\uFF09",
+          (0, import_react2.createElement)("input", {
+            type: "password",
+            value: adding.keyDraft,
+            style: styles.input,
+            onChange: (e) => setAdding({ ...adding, keyDraft: e.target.value })
+          })
+        ),
+        // 模型目录（同编辑区组件逻辑，独立状态）
+        (0, import_react2.createElement)(
+          "div",
+          { style: { fontSize: 12, display: "flex", flexDirection: "column", gap: 6 } },
+          (0, import_react2.createElement)(
+            "div",
+            { style: { display: "flex", alignItems: "center", gap: 8 } },
+            (0, import_react2.createElement)("strong", null, "\u6A21\u578B\u76EE\u5F55"),
+            (0, import_react2.createElement)("button", {
+              style: { ...styles.btn, height: 24, padding: "0 8px", fontSize: 11 },
+              disabled: adding.discovering,
+              onClick: () => {
+                setAdding({ ...adding, discovering: true });
+                const payload = { settingsNs: "llm-pi-ai", api: adding.api };
+                const bURL = adding.baseURL.trim();
+                if (bURL) payload.baseURL = bURL;
+                const key = adding.keyDraft.trim();
+                if (key) payload.apiKey = key;
+                unwrap(api.llm.discoverModels(payload), "llm.discoverModels").then((v) => setAdding((cur) => cur ? { ...cur, discovered: v.models ?? [], discovering: false } : cur)).catch((err) => {
+                  setNotice("\u274C \u62C9\u53D6\u5931\u8D25\uFF1A" + (err?.message ?? err));
+                  setAdding((cur) => cur ? { ...cur, discovering: false } : cur);
+                });
+              }
+            }, adding.discovering ? "\u62C9\u53D6\u4E2D\u2026" : "\u27F3 \u4ECE\u63D0\u4F9B\u65B9\u62C9\u53D6 | Fetch")
+          ),
+          (adding.models ?? []).map((m, i) => (0, import_react2.createElement)(
+            "div",
+            { key: i, style: { display: "flex", gap: 4, alignItems: "center" } },
+            (0, import_react2.createElement)("input", {
+              value: m.id,
+              placeholder: "\u6A21\u578B ID",
+              style: { ...styles.input, flex: 2 },
+              onChange: (e) => {
+                const next = [...adding.models];
+                next[i] = { ...m, id: e.target.value };
+                setAdding({ ...adding, models: next });
+              }
+            }),
+            (0, import_react2.createElement)("input", {
+              value: m.name ?? "",
+              placeholder: "\u663E\u793A\u540D(\u53EF\u9009)",
+              style: { ...styles.input, flex: 1.2 },
+              onChange: (e) => {
+                const next = [...adding.models];
+                next[i] = { ...m, name: e.target.value };
+                setAdding({ ...adding, models: next });
+              }
+            }),
+            (0, import_react2.createElement)("button", {
+              style: { ...styles.btn, height: 26, padding: "0 8px", fontSize: 11, color: "#dc2626" },
+              onClick: () => setAdding({ ...adding, models: adding.models.filter((_, j) => j !== i) })
+            }, "\u2715")
+          )),
+          (0, import_react2.createElement)("button", {
+            style: { ...styles.btn, height: 26, padding: "0 10px", fontSize: 11 },
+            onClick: () => setAdding({ ...adding, models: [...adding.models ?? [], { id: "" }] })
+          }, "+ \u624B\u52A8\u6DFB\u52A0\u6A21\u578B"),
+          Array.isArray(adding.discovered) && adding.discovered.length > 0 ? (0, import_react2.createElement)(
+            "div",
+            { style: { borderTop: "1px dashed var(--dsw-alias-border-l2,#e5e7eb)", paddingTop: 6, display: "flex", flexDirection: "column", gap: 4 } },
+            (0, import_react2.createElement)("div", { style: styles.muted }, "\u63D0\u4F9B\u65B9\u53EF\u7528\u6A21\u578B\uFF08\u52FE\u9009\u91C7\u7EB3\uFF09\uFF1A"),
+            adding.discovered.map((d) => {
+              const picked = (adding.discoverPicked ?? []).includes(d.id);
+              return (0, import_react2.createElement)(
+                "label",
+                { key: d.id, style: { display: "flex", gap: 6, alignItems: "center", fontSize: 12 } },
+                (0, import_react2.createElement)("input", {
+                  type: "checkbox",
+                  checked: picked,
+                  onChange: () => setAdding({
+                    ...adding,
+                    discoverPicked: picked ? (adding.discoverPicked ?? []).filter((x) => x !== d.id) : [...adding.discoverPicked ?? [], d.id]
+                  })
+                }),
+                (0, import_react2.createElement)("span", null, d.name || d.id, d.contextWindow ? " \uFF08" + d.contextWindow + " ctx\uFF09" : "")
+              );
+            }),
+            (adding.discoverPicked ?? []).length > 0 ? (0, import_react2.createElement)("button", {
+              style: { ...styles.btn, height: 26, padding: "0 10px", fontSize: 11 },
+              onClick: () => {
+                const pickedIds = new Set(adding.discoverPicked ?? []);
+                const existing = new Set((adding.models ?? []).map((m) => m.id));
+                const additions = (adding.discovered ?? []).filter((d) => pickedIds.has(d.id) && !existing.has(d.id)).map((d) => ({ id: d.id, ...d.name ? { name: d.name } : {}, ...d.contextWindow ? { contextWindow: d.contextWindow } : {}, ...d.maxTokens ? { maxTokens: d.maxTokens } : {} }));
+                setAdding({ ...adding, models: [...adding.models ?? [], ...additions], discovered: null, discoverPicked: [] });
+              }
+            }, "\u91C7\u7EB3\u52FE\u9009 (" + (adding.discoverPicked ?? []).length + ")") : null
+          ) : null
+        ),
+        (0, import_react2.createElement)(
+          "div",
+          null,
+          (0, import_react2.createElement)(
+            "button",
+            { style: styles.primary, disabled: busy, onClick: () => {
+              void createProvider();
+            } },
+            busy ? "\u521B\u5EFA\u4E2D\u2026" : "\u521B\u5EFA | Create"
+          )
+        )
+      )
+    ) : null
+  );
+}
 function apply(ctx) {
   mobileApply(ctx);
   const rpcCall = (endpoint, payload, signal) => ctx.connection.rpc.call(POCKET_RPC_CHANNEL, endpoint, payload, signal);
@@ -2430,6 +2999,20 @@ function apply(ctx) {
         inject: () => ({ rpcCall, t: translate })
       },
       PocketSettingsTab
+    )
+  );
+  const api = ctx.connection.api;
+  ctx.slots.inject(
+    "settings.section",
+    () => ctx.slots.register(
+      {
+        name: "settings.section",
+        id: "pocket-models",
+        order: 2,
+        label: () => "\u6A21\u578B\u7BA1\u7406",
+        inject: () => ({ api })
+      },
+      ModelsManagerTab
     )
   );
 }

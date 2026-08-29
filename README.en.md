@@ -54,6 +54,7 @@ What it looks like — the phone shows the exact same UI as your computer, live:
 | 🗜️ Transfer compression | Large JSON responses are gzip/brotli'd on the fly (17MB session history → ~1MB; brotli quality 6: fast and bandwidth-friendly) — faster loads, less mobile data |
 | 🔁 Tunnel auto-restore | After a DSH restart the previously-running public tunnel comes back automatically |
 | 🧩 Zero-dependency install | One npm package, one settings tab — no core/adapter split, no account, no server |
+| 📡 Provider directory (read-only) | New "Provider directory" settings tab: over LAN/public access you can still see every model provider and its active state — the core Models page reads the settings document, which is loopback-only and errors out remotely; this read-only directory fills that gap. API keys and model configs stay managed on the host's Models page |
 
 ## 🚀 Usage
 
