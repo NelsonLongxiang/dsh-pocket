@@ -6,7 +6,7 @@ import { createServer } from 'node:http';
 import { connect } from 'node:net';
 import { WebSocket, WebSocketServer } from 'ws';
 
-import { createPocketProxy } from '../lib/proxy.mjs';
+import { createPocketProxy, tokenCookieName } from '../lib/proxy.mjs';
 
 /** 构造一个带掩码的 WS 文本帧（浏览器在握手后立即发的首帧，会进 upgrade 的 head）。 */
 function maskedTextFrame(text) {
@@ -592,16 +592,16 @@ test('会话保持（issue #33）：登录 cookie 绑定进程 sessionKey，持�
     const r1 = await raw({ Host: 'abc.trycloudflare.com', 'Content-Type': 'application/x-www-form-urlencoded' }, 'POST', 'token=' + TOKEN, '/pocket-login');
     assert.equal(r1.status, 302, '登录成功');
     const sc = (r1.headers['set-cookie'] || []).join(';');
-    assert.ok(sc.includes('dsh_pocket_token=' + cookieOf(TOKEN, SK1)), 'cookie 绑定 sessionKey 派生');
+    assert.ok(sc.includes(tokenCookieName(proxy.port) + '=' + cookieOf(TOKEN, SK1)), 'cookie 绑定 sessionKey 派生');
     assert.ok(sc.includes('Max-Age=2592000'), '持久 cookie（30 天）');
     assert.ok(sc.includes('HttpOnly'), 'HttpOnly');
 
     // 2) 带派生 cookie → 放行
-    const r2 = await raw({ Host: 'abc.trycloudflare.com', Accept: 'application/json', Cookie: 'dsh_pocket_token=' + cookieOf(TOKEN, SK1) }, 'GET', undefined, '/api/hello');
+    const r2 = await raw({ Host: 'abc.trycloudflare.com', Accept: 'application/json', Cookie: tokenCookieName(proxy.port) + '=' + cookieOf(TOKEN, SK1) }, 'GET', undefined, '/api/hello');
     assert.equal(r2.status, 200, '正确 cookie 放行');
 
     // 3) 旧格式 cookie（= PIN 本身）不再放行（升级后旧登录失效，需重新输入）
-    const r3 = await raw({ Host: 'abc.trycloudflare.com', Accept: 'application/json', Cookie: 'dsh_pocket_token=' + TOKEN }, 'GET', undefined, '/api/hello');
+    const r3 = await raw({ Host: 'abc.trycloudflare.com', Accept: 'application/json', Cookie: tokenCookieName(proxy.port) + '=' + TOKEN }, 'GET', undefined, '/api/hello');
     assert.equal(r3.status, 401, '裸 PIN cookie 已失效');
 
     // 4) 模拟 dsh web 重启（新 sessionKey）→ 旧 cookie 失效，需重新登录；新会话 cookie 放行
@@ -613,9 +613,9 @@ test('会话保持（issue #33）：登录 cookie 绑定进程 sessionKey，持�
     });
     try {
       const raw2 = makeRaw(proxy2.port);
-      const r4 = await raw2({ Host: 'abc.trycloudflare.com', Accept: 'application/json', Cookie: 'dsh_pocket_token=' + cookieOf(TOKEN, SK1) }, 'GET', undefined, '/api/hello');
+      const r4 = await raw2({ Host: 'abc.trycloudflare.com', Accept: 'application/json', Cookie: tokenCookieName(proxy2.port) + '=' + cookieOf(TOKEN, SK1) }, 'GET', undefined, '/api/hello');
       assert.equal(r4.status, 401, '重启后旧 cookie 失效（需重新输入）');
-      const r5 = await raw2({ Host: 'abc.trycloudflare.com', Accept: 'application/json', Cookie: 'dsh_pocket_token=' + cookieOf(TOKEN, SK2) }, 'GET', undefined, '/api/hello');
+      const r5 = await raw2({ Host: 'abc.trycloudflare.com', Accept: 'application/json', Cookie: tokenCookieName(proxy2.port) + '=' + cookieOf(TOKEN, SK2) }, 'GET', undefined, '/api/hello');
       assert.equal(r5.status, 200, '新会话 cookie 放行');
     } finally {
       await proxy2.close();
@@ -1000,13 +1000,13 @@ test('?token=<原始 PIN> 直达种 HttpOnly cookie，issue #35', async () => {
     });
     assert.equal(r1.status, 200, '主页 200');
     const sc = Array.isArray(r1.setCookie) ? r1.setCookie.join(';') : String(r1.setCookie ?? '');
-    assert.ok(sc.includes(`dsh_pocket_token=${hashed}`), `种 cookie 含哈希值（实得：${sc.slice(0, 200)}）`);
+    assert.ok(sc.includes(`dsh_pocket_token_${proxy.port}=${hashed}`), `种 cookie 含哈希值（实得：${sc.slice(0, 200)}）`);
     assert.ok(sc.includes('HttpOnly'), 'HttpOnly 标记');
     assert.ok(sc.includes('Max-Age=2592000'), '30 天持久');
 
     // 2) 用刚种的 cookie 访问子资源：200（不再依赖 ?token=）
     const r2 = await new Promise((resolve, reject) => {
-      const req = http.request({ host: '127.0.0.1', port: proxy.port, path: '/assets/x.js', headers: { Host: 'x:3081', Cookie: `dsh_pocket_token=${hashed}` } }, (res) => {
+      const req = http.request({ host: '127.0.0.1', port: proxy.port, path: '/assets/x.js', headers: { Host: 'x:3081', Cookie: `dsh_pocket_token_${proxy.port}=${hashed}` } }, (res) => {
         res.resume(); res.on('end', () => resolve(res.statusCode));
       });
       req.on('error', reject); req.end();
