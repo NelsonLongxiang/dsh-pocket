@@ -5,12 +5,16 @@ export const POCKET_ENDPOINTS = Object.freeze({
   status: 'pocket.status',
   tunnelStart: 'tunnel.start',
   tunnelStop: 'tunnel.stop',
+  tunnelSetConfig: 'tunnel.setConfig',
   version: 'pocket.version',
   update: 'pocket.update',
   restart: 'pocket.restart',
   lanTokenRefresh: 'token.lanRefresh',
   lanAuthSetEnabled: 'lanAuth.setEnabled',
+  lanSetOverride: 'lan.setOverride',
+  lanSetEnabled: 'lan.setEnabled',
   pinSetCustom: 'pin.setCustom',
+  pocketReset: 'pocket.reset',
 });
 
 /** 语义化版本比较：a > b 返回正数，相等 0，a < b 负数（数字段 + 预发布后缀）。 */
@@ -54,10 +58,13 @@ export function redactStatus(s) {
     proxyPort: s?.proxyPort ?? null,
     lanUrl: s?.lanUrl ?? null,
     lanQr: s?.lanQr ?? null,
+    lanCandidates: Array.isArray(s?.lanCandidates) ? s.lanCandidates : [],
+    lanIpOverride: s?.lanIpOverride ?? '',
     tunnelRunning: s?.tunnelRunning === true,
     tunnelUrl: s?.tunnelUrl ?? null,
     tunnelQr: s?.tunnelQr ?? null,
     tunnelState: s?.tunnelState ?? { phase: 'idle' },
+    tunnelConfig: s?.tunnelConfig ?? { mode: 'quick', hostname: '', tokenSet: false },
     dshPort: s?.dshPort ?? null,
   };
 }

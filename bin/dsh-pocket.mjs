@@ -4,7 +4,7 @@
 // 用法：
 //   dsh-pocket                 # 局域网模式：手机同一 WiFi 扫码访问
 //   dsh-pocket --public        # 公网模式：cloudflared 隧道，人在外面也能访问
-//   dsh-pocket --port 13080     # 自定义代理端口（默认 13080；dsh web 保持 3080）
+//   dsh-pocket --port 3081     # 自定义代理端口（默认 3081；dsh web 保持 3080）
 //
 // 前提：dsh web 已在 127.0.0.1:3080 运行。
 // 手机看到的界面 = 电脑上的界面，实时同步（WebSocket 流式透传）。
@@ -17,11 +17,11 @@ import { startQuickTunnel } from '../lib/tunnel.mjs';
 const require = createRequire(import.meta.url);
 
 function parseArgs(argv) {
-  const args = { port: 13080, host: '0.0.0.0', public: false, upstream: { host: '127.0.0.1', port: 3080 } };
+  const args = { port: 3081, host: '0.0.0.0', public: false, upstream: { host: '127.0.0.1', port: 3080 } };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--public') args.public = true;
-    else if (a === '--port') args.port = Number(argv[++i]) || 13080;
+    else if (a === '--port') args.port = Number(argv[++i]) || 3081;
     else if (a === '--host') args.host = argv[++i] ?? '0.0.0.0';
     else if (a === '--help' || a === '-h') { printHelp(); process.exit(0); }
   }
@@ -34,7 +34,7 @@ function printHelp() {
 用法：
   dsh-pocket             局域网模式（手机同一 WiFi）
   dsh-pocket --public    公网模式（cloudflared 隧道，人在外面）
-  dsh-pocket --port 13080 自定义代理端口
+  dsh-pocket --port 3081 自定义代理端口
   dsh-pocket --help      帮助
 
 前提：dsh web 已在 127.0.0.1:3080 运行（npx @deepseek-ai/dsh web）。

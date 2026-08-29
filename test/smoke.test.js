@@ -113,10 +113,16 @@ test('移动导航 backdrop（issue #38）：点击穿透不抢抽屉内点击 +
   assert.ok(src.includes('"data-mobile-nav": "backdrop"'), 'backdrop 纯视觉渲染');
   // 关闭逻辑：抽屉内导航关闭 + 抽屉外点击关闭（两套 document capture contains 处理）
   assert.ok((src.match(/contains\(target\)/g) || []).length >= 2, '存在抽屉内外两套点击处理');
-  // 抽屉层级（PR #42）：必须高于第三方插件对 shell overlay 层的抬升（500）
-  // 直接断言 bundle 中抽屉规则的 z-index: 600（若退回 40 则此处失败）
-  assert.ok(src.includes('z-index: 600 !important'), '抽屉 z-index 600（高于 overlay 抬升 500）');
+  // 抽屉层级（PR #42 / issue #67）：必须高于第三方插件对 shell overlay 层的
+  // 抬升（500），也要压过 @linxin666/dsh-web-ui-all 的移动端层（sidebar pane
+  // 1100、details pane 1000、frame ::after 全屏遮罩 1050）。
+  // 直接断言 bundle 中抽屉规则的 z-index: 1200（若退回 40/600 则此处失败）
+  assert.ok(
+    src.includes('z-index: 1200 !important'),
+    '抽屉 z-index 1200（高于 overlay 抬升 500 与 web-ui-all 的 1100/1050）',
+  );
   assert.ok(!src.includes('z-index: 40 !important'), '不再用 40（会被第三方抬升的 overlay 盖住）');
+  assert.ok(!src.includes('z-index: 600 !important'), '不再用 600（会被 web-ui-all 的 1050 遮罩盖住）');
 });
 
 test('公网免责声明（issue #31）：bundle 含弹框与勾选逻辑，RPC 必须带 disclaimer 确认', async () => {
@@ -124,4 +130,23 @@ test('公网免责声明（issue #31）：bundle 含弹框与勾选逻辑，RPC 
   const src = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8');
   assert.ok(src.includes('disclaimer'), 'bundle 含免责声明逻辑');
   assert.ok(src.includes('disclaimer: true'), '开启公网带免责声明确认参数');
+});
+
+test('文件浏览（issue #48）：宿主无 aionui explorer 时隐藏入口；点 Files 关抽屉', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8');
+  // 检测逻辑：frame 打 data-mobile-nav-explorer 标记
+  assert.ok(src.includes('data-mobile-nav-explorer'), '存在 explorer 可用性检测标记');
+  // 隐藏 CSS：无 explorer 时隐藏 files/explorer 入口
+  assert.ok(src.includes('[data-mobile-nav-explorer="0"] [data-mobile-nav="files"]'), '无 explorer 隐藏 header Files');
+  assert.ok(src.includes('[data-mobile-nav-explorer="0"] [data-mobile-nav="explorer"]'), '无 explorer 隐藏 drawer 入口');
+  // 点 Files 关闭抽屉（抽屉 z600 会盖住 explorer sheet，且 sheet 外点击会被吃掉）
+  assert.ok(src.includes('[data-mobile-nav="files"]'), 'Files 纳入抽屉内导航关闭');
+});
+
+test('Windows 更新 spawn（PR #54）：performUpdate 的 spawn 必须带 shell 选项', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8');
+  const seg = src.slice(src.indexOf("spawn('dsh'"), src.indexOf('spawn(\'dsh\')') + 500);
+  assert.ok(src.includes("shell: process.platform === 'win32'"), 'spawn 带 shell: win32（npm shim ENOENT / Node22 EINVAL）');
 });

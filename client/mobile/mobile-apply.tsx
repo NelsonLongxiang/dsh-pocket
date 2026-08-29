@@ -3,9 +3,11 @@ import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import { MobileNavToggle } from './MobileNavToggle.tsx'
 import { MobileNavOverlay } from './MobileNavOverlay.tsx'
 import { MobileDrawerFooter } from './MobileDrawerFooter.tsx'
+import { startFileGuard } from './fileGuard.ts'
 import { MOBILE_CSS } from './mobile.css.ts'
 import { NS, en, zh } from './locales.ts'
 import type { MobileNavKey } from './locales.ts'
+import { resolveLayout, persistLayoutFromUrl } from './layout-mode.mjs'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
@@ -23,6 +25,22 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
  * @param ctx - client root context.
  */
 export function mobileApply(ctx): void {
+  // 布局模式（issue #74）：URL 参数 > localStorage > auto(=matchMedia)。
+  // desktop 模式（宽屏手机/平板强制电脑布局）下整段 mobile 效果都不挂——
+  // 不加 styles、不挂 slots、不跑 effects，直接走 DSH 原生桌面 UI。
+  const urlValue = new URL(window.location.href).searchParams.get('dsh-layout') ?? '';
+  const narrowMQ = window.matchMedia('(max-width: 1023px)');
+  const stored = persistLayoutFromUrl(urlValue);
+  const layout = resolveLayout({ urlValue, stored, narrowMatch: narrowMQ.matches });
+  document.body?.setAttribute('data-dsh-pocket-layout', layout);
+  if (layout === 'desktop') return;
+  // 强制 mobile：narrow 永远 true；宽度变化不再切换（用户已显式选 mobile）
+  // auto 模式：narrow 是真实的 matchMedia，宽度变化会触发 effect 挂载/卸载
+  let narrow: MediaQueryList = narrowMQ;
+  if (layout === 'mobile') {
+    narrow = { matches: true, addEventListener: () => {}, removeEventListener: () => {} } as MediaQueryList;
+  }
+
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-mobile-nav: dictionaries')
 
   ctx.effect(() => {
@@ -52,7 +70,6 @@ export function mobileApply(ctx): void {
   //   zoom; modern browsers are covered by the stylesheet's
   //   touch-action: manipulation (which keeps pan and pinch zoom).
   ctx.effect(() => {
-    const narrow = window.matchMedia('(max-width: 1023px)')
     const viewport = document.querySelector<HTMLMetaElement>('meta[name="viewport"]')
     const originalViewport = viewport?.content ?? ''
     const themeMeta = document.createElement('meta')
@@ -96,7 +113,6 @@ export function mobileApply(ctx): void {
   // sheet's own collapse chevron is tapped, so closing is symmetric with
   // opening.
   ctx.effect(() => {
-    const narrow = window.matchMedia('(max-width: 1023px)')
     if (!narrow.matches) return () => {}
     const onChevronClick = (event: MouseEvent) => {
       const target = event.target as HTMLElement | null
@@ -107,6 +123,30 @@ export function mobileApply(ctx): void {
     return () => document.removeEventListener('click', onChevronClick, true)
   }, 'dsh-mobile-nav: aionui explorer close marker')
 
+  // The mobile "Files" entries (header icon + drawer footer) open the
+  // dsh-web-ui **aionui explorer column** — a host-side component that plain
+  // DeepSeek Harness does NOT ship (issue #48). Without it the entries are
+  // dead buttons (they only toggle a frame attribute; nothing ever renders).
+  // Detect whether the host provides the column and mark the frame with
+  // `data-mobile-nav-explorer="1|0"` so the stylesheet can hide the entries
+  // on hosts without it (dsh-web-ui installs keep the feature).
+  ctx.effect(() => {
+    if (!narrow.matches) return () => {}
+    const frame = (): HTMLElement | null => document.querySelector('[data-mobile-nav="frame"]')
+    const check = () => {
+      const has = document.querySelector('[data-aionui-explorer-col]') !== null
+      frame()?.setAttribute('data-mobile-nav-explorer', has ? '1' : '0')
+    }
+    check()
+    const timer = window.setTimeout(check, 1500) // 宿主懒渲染：稍后再查一次
+    const observer = new MutationObserver(check)
+    observer.observe(document.body, { childList: true, subtree: true })
+    return () => {
+      window.clearTimeout(timer)
+      observer.disconnect()
+    }
+  }, 'dsh-mobile-nav: explorer availability (issue #48)')
+
   // dsh-web-ui compatibility: the aionui preview column persists its open
   // tabs in localStorage and restores them on load, which would pop the
   // preview sheet over the fresh UI after a reload. Gate it like the
@@ -116,7 +156,6 @@ export function mobileApply(ctx): void {
   // whenever the suite hides the column again (collapse chevron / tab
   // close), so a restored-but-unwanted sheet never appears.
   ctx.effect(() => {
-    const narrow = window.matchMedia('(max-width: 1023px)')
     if (!narrow.matches) return () => {}
     const frame = (): HTMLElement | null => document.querySelector('[data-mobile-nav="frame"]')
     const onTap = (event: MouseEvent) => {
@@ -148,7 +187,6 @@ export function mobileApply(ctx): void {
   // marked row out as ONE horizontally scrolling line with every metric
   // reachable.
   ctx.effect(() => {
-    const narrow = window.matchMedia('(max-width: 1023px)')
     if (!narrow.matches) return () => {}
     // The composer root renders the TPS readout ("TPS 89.4 tok/s") as its
     // own row BELOW the status strip; fold it into the strip so every
@@ -193,7 +231,6 @@ export function mobileApply(ctx): void {
   // with the Web Animations API each time a column turns visible, then
   // leave the resting state to the stylesheet.
   ctx.effect(() => {
-    const narrow = window.matchMedia('(max-width: 1023px)')
     if (!narrow.matches) return () => {}
     const cols = ['[data-aionui-explorer-col]', '[data-aionui-preview-col]']
     const seen = new Map<string, boolean>()
@@ -225,6 +262,15 @@ export function mobileApply(ctx): void {
       observer.disconnect()
     }
   }, 'dsh-mobile-nav: sheet rise animation replay')
+
+  // 移动端文件守卫（issue #17 修正）：手机上点 dsh-web 渲染的文件链接会触发桌面
+  // 端 workspaces.openPath(open ...) —— 既打不开（路径在电脑上），又会抛
+  // "path open failed"。这里在捕获阶段拦截这类点击 / 键盘激活，改为弹一个提示，
+  // 并隐藏「添加工作区」入口（手机上配工作区无意义）。只挂窄屏。
+  ctx.effect(() => {
+    if (!narrow.matches) return () => {}
+    return startFileGuard()
+  }, 'dsh-mobile-nav: file open guard + hide add-workspace (issue #17)')
 
   ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
     name: 'conversation.session.header.actions',

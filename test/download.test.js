@@ -136,3 +136,35 @@ test('隧道 URL 解析（issue #32）：排除 api.trycloudflare.com 保留子�
   const m = output.match(QUICK_TUNNEL_URL_RE);
   assert.ok(m && m[0] === 'https://xyz789.trycloudflare.com', '不误匹配 api 地址: ' + (m && m[0]));
 });
+
+// ---------- 发布资产名（issue #45） ----------
+
+test('platformAssets（issue #45）：linux 首选裸二进制，不再拼上游已下架的 .tgz', async () => {
+  const { platformAssets } = await import('../lib/tunnel.mjs');
+  const onPlatform = (platform, arch) => {
+    const pd = Object.getOwnPropertyDescriptor(process, 'platform');
+    const ad = Object.getOwnPropertyDescriptor(process, 'arch');
+    Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+    Object.defineProperty(process, 'arch', { value: arch, configurable: true });
+    try {
+      return platformAssets();
+    } finally {
+      if (pd) Object.defineProperty(process, 'platform', pd);
+      if (ad) Object.defineProperty(process, 'arch', ad);
+    }
+  };
+  // 2026-08 起 cloudflared 不再发布 cloudflared-linux-<arch>.tgz（实测 404），
+  // 只有裸二进制 cloudflared-linux-<arch>。以前我们在 linux 上拼的是 .tgz，
+  // 五个镜像全指向同一个 404 → 必然「所有源都不通」。
+  assert.deepEqual(onPlatform('linux', 'x64'), ['cloudflared-linux-amd64', 'cloudflared-linux-amd64.tgz']);
+  assert.deepEqual(onPlatform('linux', 'arm64'), ['cloudflared-linux-arm64', 'cloudflared-linux-arm64.tgz']);
+  assert.deepEqual(onPlatform('linux', 'ia32'), ['cloudflared-linux-386', 'cloudflared-linux-386.tgz']);
+  // .tgz 只作为回退排在后面：首个候选必须是不需要解压的裸二进制
+  assert.ok(!onPlatform('linux', 'x64')[0].endsWith('.tgz'), 'linux 首选资产不该是 .tgz');
+  // 其他平台的布局没变
+  assert.deepEqual(onPlatform('darwin', 'arm64'), ['cloudflared-darwin-arm64.tgz']);
+  assert.deepEqual(onPlatform('darwin', 'x64'), ['cloudflared-darwin-amd64.tgz']);
+  assert.deepEqual(onPlatform('win32', 'x64'), ['cloudflared-windows-amd64.exe']);
+  // 真实环境（本机）至少有一个候选
+  assert.ok(platformAssets().length >= 1);
+});
