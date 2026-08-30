@@ -231,3 +231,10 @@ npm test                # 代理 / 认证 / 压缩 / 隧道 / 服务 / RPC / 设
 - 版本号回归上游基线（1.31.0 → 2.7.1），后续同步以 tag 对齐，消除版本冲突。
 - 保留 fork 定制：scoped 包名 + client bundle 按包名注册 + 端口走 `proxyPort` 配置。
 
+## v2.9.0（端口推导，收编 feat/derive-pocket-port）
+
+- **默认代理端口 = dsh web 端口 + 10000**（3080→13080、3081→13081、3084→13084）：多实例（生产 + 测试 home）并行时默认端口天然错开，不再互抢、不再依赖 EADDRINUSE 退避。移植自未合并分支 `feat/derive-pocket-port@e437996`，适配 2.8.0 基线。
+- 端口优先级：`internals.port` > `config.port` > **`settings.json` 的 `proxyPort`（issue #70）** > 推导默认（非法 dshPort 回退 13080）。显式配置（含 proxyPort）被占时保持上游 fail-fast 抛错——不做静默端口漂移（漂移正是历史 cookie 互顶事故的根源）。
+- 会话 cookie 按实际绑定端口隔离（v2.8.0 特性），与推导端口天然协同。
+- ⚠️ 部署注意：web 端口非 3080 的节点（如 .223/.43 的 3084）若此前依赖固定 13080 且未显式配置，升级后 pocket 将落在 13084——需要保持 13080 的在 `settings.json` 写 `"proxyPort": 13080`。
+
