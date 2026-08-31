@@ -238,3 +238,9 @@ npm test                # 代理 / 认证 / 压缩 / 隧道 / 服务 / RPC / 设
 - 会话 cookie 按实际绑定端口隔离（v2.8.0 特性），与推导端口天然协同。
 - ⚠️ 部署注意：web 端口非 3080 的节点（如 .223/.43 的 3084）若此前依赖固定 13080 且未显式配置，升级后 pocket 将落在 13084——需要保持 13080 的在 `settings.json` 写 `"proxyPort": 13080`。
 
+## v2.9.1（修复模型管理页崩溃）
+
+- 修复手机端「模型管理」页 `❌ Cannot read properties of undefined (reading 'llm')`：根因是桌面端 DSH 的 Remote namespaces 重构移除了 `ctx.connection.api`（宿主升级抽走了插件依赖的地板），provider 目录特性整个数据层随之失效。
+- 数据层改挂 `ctx.remote`（llm/settings/credentials 三命名空间，bundle 注入 `@deepseek-ai/dsh-api-remotes`）：`providers` 目录改用 `listConfigurableProviders()`（字段 provider/settingsNs/settingsPath 与旧消费 1:1 吻合）、`discoverModels` 适配新签名 `(settingsNs, request)`；旧宿主回落 `ctx.connection.api`，双面兼容。
+- `unwrap` 双信封兼容（新平信封 `{ok,value}` 与旧 `{rpcId,result:{ok,value}}`）——宿主或调用面任一升级都不再破坏设置页与模型页。
+
