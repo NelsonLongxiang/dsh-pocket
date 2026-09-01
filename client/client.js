@@ -1888,7 +1888,7 @@ var en2 = {
 
 // client/index.jsx
 var name = "dsh-pocket";
-var inject = ["slots", "connection", "remote", "layout", "locale", "sessionLogDownload"];
+var inject = ["slots", "connection", "remote", "remote.llm", "remote.settings", "remote.credentials", "layout", "locale", "sessionLogDownload"];
 function fmt(t, key, vars) {
   let s = t(key);
   if (vars) {

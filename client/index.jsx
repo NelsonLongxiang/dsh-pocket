@@ -14,7 +14,7 @@ import { mobileApply } from './mobile/mobile-apply.tsx';
 import { NS as POCKET_NS, zh as POCKET_ZH, en as POCKET_EN } from './pocket-locales.js';
 
 const name = 'dsh-pocket';
-const inject = ['slots', 'connection', 'remote', 'layout', 'locale', 'sessionLogDownload'];
+const inject = ['slots', 'connection', 'remote', 'remote.llm', 'remote.settings', 'remote.credentials', 'layout', 'locale', 'sessionLogDownload'];
 
 // 词典在 pocket-locales.js；这里只做「取 key → 替换 {占位符} → 字符串」。
 // 不依赖 DSH t() 的插值能力，避免行为不一致。
