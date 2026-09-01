@@ -2,7 +2,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createServer } from 'node:http';
+import { createServer, request as httpRequest } from 'node:http';
 import { connect } from 'node:net';
 import { WebSocket, WebSocketServer } from 'ws';
 
@@ -18,6 +18,25 @@ function maskedTextFrame(text) {
   const masked = Buffer.alloc(payload.length);
   for (let i = 0; i < payload.length; i++) masked[i] = payload[i] ^ mask[i % 4];
   return Buffer.concat([header, mask, masked]);
+}
+
+/**
+ * 以指定 Host 头取回响应文本。
+ *
+ * 必须用原始 http.request：fetch() 遵循 Fetch 规范，Host 属于 forbidden header name，
+ * 会被静默丢弃，代理看到的永远是 `127.0.0.1:<port>`（→ loopback），写出来的
+ * 「公网 Host」测试其实一直在测局域网分支。
+ */
+function getWithHost(port, hostHeader, extraHeaders = {}) {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest({ host: '127.0.0.1', port, path: '/', headers: { host: hostHeader, accept: 'text/html', ...extraHeaders } }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString('utf8') }));
+    });
+    req.on('error', reject);
+    req.end();
+  });
 }
 
 /** 假上游：记录收到的 Host/Origin，回显请求路径。 */
@@ -37,6 +56,64 @@ async function fakeUpstream() {
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   return { port: server.address().port, seen, server };
 }
+
+/** 假上游：对所有请求返回 403 text/plain，body 可配置（模拟 DSH Desktop 的
+ *  desktop-browser-access 门禁，或任意其他 403）。 */
+async function fakeUpstream403(body = 'forbidden') {
+  const server = createServer((req, res) => {
+    res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' });
+    res.end(body);
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  return { port: server.address().port, server };
+}
+
+test('issue #81: 导航请求遇上游 403 forbidden → 改写为可操作提示页（保留 403）', async () => {
+  const up = await fakeUpstream403('forbidden');
+  const proxy = await createPocketProxy({ port: 0, host: '127.0.0.1', upstream: { host: '127.0.0.1', port: up.port } });
+  try {
+    const res = await fetch(`http://127.0.0.1:${proxy.port}/`, { headers: { Accept: 'text/html' } });
+    assert.equal(res.status, 403, '状态码保持 403（未授权访问未授予）');
+    assert.match(res.headers.get('content-type') ?? '', /text\/html/, '提示页是 HTML');
+    assert.equal(res.headers.get('x-dsh-pocket-gate'), 'desktop-browser-access', '标记门禁来源');
+    const html = await res.text();
+    assert.match(html, /浏览器访问/, '提示页说明需开启浏览器访问');
+    assert.match(html, /compatibility/, '提示页给出 compatibility 模式配置');
+  } finally {
+    await proxy.close();
+    await new Promise((r) => up.server.close(r));
+  }
+});
+
+test('issue #81: API 请求遇上游 403 forbidden → 原样透传（不改写为提示页）', async () => {
+  const up = await fakeUpstream403('forbidden');
+  const proxy = await createPocketProxy({ port: 0, host: '127.0.0.1', upstream: { host: '127.0.0.1', port: up.port } });
+  try {
+    const res = await fetch(`http://127.0.0.1:${proxy.port}/api/events`, { headers: { Accept: 'application/json' } });
+    assert.equal(res.status, 403);
+    assert.match(res.headers.get('content-type') ?? '', /text\/plain/, '原样透传 text/plain');
+    assert.equal(await res.text(), 'forbidden', '原样透传 body');
+    assert.equal(res.headers.get('x-dsh-pocket-gate'), null, 'API 不标门禁');
+  } finally {
+    await proxy.close();
+    await new Promise((r) => up.server.close(r));
+  }
+});
+
+test('issue #81: 其他 403 文本（非 forbidden）不误判为桌面门禁', async () => {
+  const up = await fakeUpstream403('denied');
+  const proxy = await createPocketProxy({ port: 0, host: '127.0.0.1', upstream: { host: '127.0.0.1', port: up.port } });
+  try {
+    const res = await fetch(`http://127.0.0.1:${proxy.port}/`, { headers: { Accept: 'text/html' } });
+    assert.equal(res.status, 403);
+    assert.match(res.headers.get('content-type') ?? '', /text\/plain/, '原样透传（非提示页）');
+    assert.equal(await res.text(), 'denied', '原样透传 body');
+    assert.equal(res.headers.get('x-dsh-pocket-gate'), null, '不标门禁');
+  } finally {
+    await proxy.close();
+    await new Promise((r) => up.server.close(r));
+  }
+});
 
 test('HTTP：Host/Origin 被改写成 loopback 权威，响应原样返回', async () => {
   const up = await fakeUpstream();
@@ -278,6 +355,37 @@ test('HTML 注入：非安全上下文 polyfill 只注入 HTML 文档，不碰 J
     assert.ok(html.indexOf('randomUUID') < html.indexOf('</head>'), '注入在 head 内、app 脚本之前');
     const js = await (await fetch(`http://127.0.0.1:${proxy.port}/app.js`)).text();
     assert.ok(!js.includes('randomUUID'), 'JS 资源不注入');
+  } finally {
+    await proxy.close();
+    await new Promise((r) => up.close(r));
+  }
+});
+
+test('会话指纹已移除（2.10.0）：页面与登录页不再注入指纹/access 标记（issue #82/#83 后续）', async () => {
+  // 2.9.0 引入会话指纹防钓鱼、2.9.1 限制为仅公网生效；2.10.0 整体移除——
+  // 钓鱼站不经本代理、跑不到我们的校验代码，自动拦截层是死代码；人工比对不现实。
+  // 真正的防线仍是：公网强制密码（fail closed）+ PIN 每次开启轮换 + 登录限速 + 链接勿收藏提示。
+  const up = createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    res.end('<!doctype html><head><title>x</title></head><body>app</body>');
+  });
+  await new Promise((r) => up.listen(0, '127.0.0.1', r));
+  const TOKEN = 'ABCDE123';
+  const SK = 'session-key';
+  const proxy = await createPocketProxy({
+    port: 0, host: '127.0.0.1', upstream: { host: '127.0.0.1', port: up.address().port },
+    auth: { getToken: () => TOKEN, isProtected: () => true, sessionKey: SK },
+  });
+  try {
+    const pub = (await getWithHost(proxy.port, 'abc.trycloudflare.com')).body;
+    assert.ok(pub.includes('此公网地址'), '公网登录页正常');
+    assert.ok(!pub.includes('dsh-pocket-session'), '不再注入会话指纹 meta');
+    assert.ok(!pub.includes('dsh-pocket-access'), '不再注入访问类型标记');
+    assert.ok(!pub.includes('会话指纹'), '登录页不再展示指纹');
+
+    const lan = (await getWithHost(proxy.port, '192.168.1.100:3081')).body;
+    assert.ok(lan.includes('此局域网地址'), '局域网登录页提示为局域网文案');
+    assert.ok(!lan.includes('dsh-pocket-session'), '局域网也不含指纹 meta');
   } finally {
     await proxy.close();
     await new Promise((r) => up.close(r));
@@ -826,6 +934,11 @@ test('classifyHost（issue #66）：loopback/私网归类，陌生域名一律 p
   assert.equal(classifyHost('10.0.0.2'), 'lan');
   assert.equal(classifyHost('172.16.3.4'), 'lan');
   assert.equal(classifyHost('172.32.1.1'), 'public', '172.32 不在 RFC1918 范围');
+  // lan：CGNAT 100.64/10（RFC 6598，Tailscale/ZeroTier 默认网段，issue #79）
+  assert.equal(classifyHost('100.64.0.1'), 'lan');
+  assert.equal(classifyHost('100.127.255.254:3081'), 'lan');
+  assert.equal(classifyHost('100.63.0.1'), 'public', '100.63 不在 100.64/10 范围');
+  assert.equal(classifyHost('100.128.0.1'), 'public', '100.128 不在 100.64/10 范围');
   assert.equal(classifyHost('fd00::5'), 'lan');
   assert.equal(classifyHost('fe80::1%en0'), 'lan');
   assert.equal(classifyHost('mypc.local'), 'lan');
