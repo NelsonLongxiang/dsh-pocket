@@ -14,7 +14,7 @@ import { mobileApply } from './mobile/mobile-apply.tsx';
 import { NS as POCKET_NS, zh as POCKET_ZH, en as POCKET_EN } from './pocket-locales.js';
 
 const name = 'dsh-pocket';
-const inject = ['slots', 'connection', 'layout', 'locale', 'sessionLogDownload'];
+const inject = ['slots', 'connection', 'remote', 'layout', 'locale', 'sessionLogDownload'];
 
 // 词典在 pocket-locales.js；这里只做「取 key → 替换 {占位符} → 字符串」。
 // 不依赖 DSH t() 的插值能力，避免行为不一致。
@@ -635,11 +635,15 @@ function deriveKeyRef(provider) {
   return provider.toUpperCase().replace(/[^A-Z0-9]+/g, '_') + '_API_KEY';
 }
 
-/** RpcResponse 信封解包：{ rpcId, result: { ok, value | error } } → value 或 throw。 */
+/** RPC 结果解包，双信封兼容：
+ *  - ctx.remote.*（Remote namespaces，平信封）：{ ok, value | error }
+ *  - ctx.connection.api.*（旧 RpcResponse 信封）：{ rpcId, result: { ok, value | error } }
+ *  宿主或调用面任一升级都不破坏设置页与模型页。 */
 async function unwrap(promise, what) {
   const res = await promise;
-  if (!res?.result?.ok) throw new Error(res?.result?.error?.message ?? what + ' failed');
-  return res.result.value;
+  const inner = res?.result ?? res;
+  if (!inner?.ok) throw new Error(inner?.error?.message ?? what + ' failed');
+  return inner.value;
 }
 
 function ModelsManagerTab({ api }) {
@@ -1063,9 +1067,24 @@ export function apply(ctx) {
     ),
   );
 
-  // 提供方目录：只读、任何访问方式可用（局域网/公网代理下核心「模型」页的
-  // 设置读取不可达，这里是远程唯一能看到目录的地方）
-  const api = ctx.connection.api;
+  // 提供方目录数据层：桌面端 Remote namespaces 重构后 ctx.connection.api 已移除
+  // （「Cannot read properties of undefined (reading 'llm')」的根因——宿主升级抽走了地板）。
+  // 新宿主：ctx.remote 三命名空间（llm/settings/credentials），llm 方法名有变化需适配：
+  //   旧 api.llm.providers() → 新 listConfigurableProviders()（字段 provider/settingsNs/settingsPath 1:1 吻合）
+  //   旧 api.llm.discoverModels({settingsNs,...}) → 新 discoverModels(settingsNs, request)
+  // 旧宿主回落 ctx.connection.api。unwrap 双信封兼容两条调用面。
+  const api = ctx.remote?.llm ? {
+    llm: {
+      providers: async () => ({ providers: await ctx.remote.llm.listConfigurableProviders() }),
+      discoverModels: async (payload) => {
+        const { settingsNs, ...request } = payload ?? {};
+        const models = await ctx.remote.llm.discoverModels(settingsNs, request);
+        return { models: models ?? [] };
+      },
+    },
+    settings: ctx.remote.settings,
+    credentials: ctx.remote.credentials,
+  } : ctx.connection?.api;
   ctx.slots.inject('settings.section', () =>
     ctx.slots.register(
       {

@@ -1765,7 +1765,7 @@ var en2 = {
 
 // client/index.jsx
 var name = "dsh-pocket";
-var inject = ["slots", "connection", "layout", "locale", "sessionLogDownload"];
+var inject = ["slots", "connection", "remote", "layout", "locale", "sessionLogDownload"];
 function fmt(t, key, vars) {
   let s = t(key);
   if (vars) {
@@ -2421,8 +2421,9 @@ function deriveKeyRef(provider) {
 }
 async function unwrap(promise, what) {
   const res = await promise;
-  if (!res?.result?.ok) throw new Error(res?.result?.error?.message ?? what + " failed");
-  return res.result.value;
+  const inner = res?.result ?? res;
+  if (!inner?.ok) throw new Error(inner?.error?.message ?? what + " failed");
+  return inner.value;
 }
 function ModelsManagerTab({ api }) {
   const [data, setData] = (0, import_react2.useState)(null);
@@ -3001,7 +3002,18 @@ function apply(ctx) {
       PocketSettingsTab
     )
   );
-  const api = ctx.connection.api;
+  const api = ctx.remote?.llm ? {
+    llm: {
+      providers: async () => ({ providers: await ctx.remote.llm.listConfigurableProviders() }),
+      discoverModels: async (payload) => {
+        const { settingsNs, ...request } = payload ?? {};
+        const models = await ctx.remote.llm.discoverModels(settingsNs, request);
+        return { models: models ?? [] };
+      }
+    },
+    settings: ctx.remote.settings,
+    credentials: ctx.remote.credentials
+  } : ctx.connection?.api;
   ctx.slots.inject(
     "settings.section",
     () => ctx.slots.register(
