@@ -49,6 +49,12 @@ export const MOBILE_CSS = `
   align-items: center;
   gap: 8px;
 }
+/* 宿主没有 aionui explorer 列（官方 DSH 无 dsh-web-ui，issue #48）时隐藏
+   移动端「文件浏览」入口（header 图标 + drawer footer 项）——不然点了没反应。 */
+[data-mobile-nav-explorer="0"] [data-mobile-nav="files"],
+[data-mobile-nav-explorer="0"] [data-mobile-nav="explorer"] {
+  display: none !important;
+}
 [data-mobile-nav="session-log"],
 [data-mobile-nav="explorer"] {
   display: inline-flex;
@@ -204,14 +210,19 @@ export const MOBILE_CSS = `
      it to 500), and when the layer outranks the drawer, the backdrop paints
      ABOVE the drawer and swallows every tap — the drawer opens but no row
      can be pressed (every tap just closes it). The drawer must therefore
-     outrank any such raise: 600 clears the known 500 while staying under the
-     fixed-position banners/toasts (z 9999) that float at the viewport level. */
+     outrank any such raise.
+     1200 (was 600) clears the mobile layers shipped by
+     @linxin666/dsh-web-ui-all — its sidebar pane is z-index 1100, its
+     details pane 1000 and its full-screen frame ::after mask 1050 (issue
+     #67: that mask sat on top of the 600 drawer and ate every tap). Still
+     far under the fixed-position banners/toasts (z 9999) that float at the
+     viewport level. */
   [data-mobile-nav="frame"] > :first-child {
     position: absolute !important;
     inset: 0 auto 0 0 !important;
     width: max-content !important;
     max-width: 92vw !important;
-    z-index: 600 !important;
+    z-index: 1200 !important;
     transform: translateX(-110%);
     transition: transform .28s var(--ds-ease-in-out, ease-in-out);
     background: var(--dsw-alias-bg-base, #ffffff);
@@ -238,6 +249,32 @@ export const MOBILE_CSS = `
      viewport-anchored: it dims the full screen and the sheet sits at left:8. */
   [data-mobile-nav="frame"]:not([data-sidebar-collapsed]) > :first-child {
     transform: none !important;
+  }
+
+  /* Kill a competing full-screen mask (issue #67).
+     @linxin666/dsh-web-ui-all ships its own mobile drawer, and part of it is
+
+       [data-dsh-frame]:not([data-sidebar-collapsed])::after {
+         content: ""; position: fixed; inset: 0; z-index: 1050;
+         background: rgb(0 0 0 / 24%);
+       }
+
+     The pseudo-element belongs to the frame we already mark, and the frame
+     carries only "position: relative" with z-index auto — no stacking context
+     — so this mask competes with the drawer in the parent stacking context
+     and, at 1050, paints over it. It covers the whole viewport, so every tap
+     on a session row lands on the mask instead: the drawer opens but nothing
+     inside it can be pressed, and the page behind cannot be scrolled.
+     Removing it is safe: the mobile stylesheet already renders its own
+     backdrop, and tapping outside the drawer is handled in JS.
+
+     The attribute selector is repeated on purpose. Their rule has the same
+     specificity (0,2,1) once ours is written the obvious way, and plugin
+     stylesheets are injected in load order, so a tie would be decided by
+     whichever plugin happened to load last. Doubling the attribute makes it
+     (0,3,1) and deterministic. */
+  [data-mobile-nav="frame"][data-mobile-nav="frame"]:not([data-sidebar-collapsed])::after {
+    content: none !important;
   }
 
   /* Drag handles are useless on touch and would float over the drawer. */
@@ -835,6 +872,17 @@ export const MOBILE_CSS = `
   [data-phase="hero"] [class$="_stack"] {
     gap: 0 !important;
   }
+
+  /* ---------- 隐藏「添加工作区」入口（手机上配工作区无意义，issue #17 修正） ----------
+     图标按钮的 aria-label 随语言变化（zh「添加工作区」/ en「Add workspace」），
+     两种都覆盖；下拉菜单里的「添加工作区…」项由 fileGuard.ts 的 MutationObserver
+     按文案兜底隐藏（CSS 选不到纯文本节点）。只在窄屏生效——桌面端照常保留。 */
+  button[aria-label="添加工作区"],
+  button[aria-label="添加工作区…"],
+  button[aria-label="Add workspace"],
+  button[aria-label="Add workspace…"] {
+    display: none !important;
+  }
 }
 
 /* ---------- desktop: the mobile controls must never appear ---------- */
@@ -850,4 +898,5 @@ export const MOBILE_CSS = `
     display: none !important;
   }
 }
+
 `

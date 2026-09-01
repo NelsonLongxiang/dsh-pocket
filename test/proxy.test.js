@@ -6,7 +6,7 @@ import { createServer } from 'node:http';
 import { connect } from 'node:net';
 import { WebSocket, WebSocketServer } from 'ws';
 
-import { createPocketProxy } from '../lib/proxy.mjs';
+import { createPocketProxy, tokenCookieName } from '../lib/proxy.mjs';
 
 /** 构造一个带掩码的 WS 文本帧（浏览器在握手后立即发的首帧，会进 upgrade 的 head）。 */
 function maskedTextFrame(text) {
@@ -52,6 +52,100 @@ test('HTTP：Host/Origin 被改写成 loopback 权威，响应原样返回', asy
   } finally {
     await proxy.close();
     await new Promise((r) => up.server.close(r));
+  }
+});
+
+test('WS 上游 socket 发 RST（ECONNRESET）不崩进程（PR #49）：error 监听兜底', async () => {
+  const { createServer: createUp } = await import('node:http');
+  const { createHash } = await import('node:crypto');
+  const upSockets = [];
+  const up = createUp((req, res) => { res.writeHead(200, { 'content-type': 'text/plain' }); res.end('ok'); });
+  up.on('upgrade', (req, socket) => {
+    upSockets.push(socket);
+    // 正常 101 握手（用标准 Sec-WebSocket-Accept 计算）
+    const accept = createHash('sha1')
+      .update(String(req.headers['sec-websocket-key'] ?? '') + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11')
+      .digest('base64');
+    socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ' + accept + '\r\n\r\n');
+  });
+  await new Promise((r) => up.listen(0, '127.0.0.1', r));
+  const proxy = await createPocketProxy({
+    port: 0, host: '127.0.0.1',
+    upstream: { host: '127.0.0.1', port: up.address().port },
+    heartbeat: false, // 排除心跳变量，专注 error 兜底
+  });
+  try {
+    const ws = new WebSocket(`ws://127.0.0.1:${proxy.port}/api/events.host`);
+    await new Promise((resolve, reject) => { ws.on('open', resolve); ws.on('error', reject); });
+
+    // 上游发 RST（resetAndDestroy 触发 ECONNRESET）——修复前 proxySocket 无 error 监听，
+    // 未处理的 error 事件会让整个 dsh web 进程崩溃退出（uncaught exception）
+    for (const s of upSockets) { try { s.resetAndDestroy?.(); } catch { s.destroy(); } }
+    await new Promise((r) => setTimeout(r, 250)); // 等 RST 传播
+
+    // 进程未崩：代理仍能服务新请求
+    const res = await fetch(`http://127.0.0.1:${proxy.port}/after`);
+    assert.equal(res.status, 200);
+    assert.equal(await res.text(), 'ok', '上游 RST 后代理进程仍存活');
+  } finally {
+    try { await proxy.close(); } catch { /* 已关 */ }
+    await new Promise((r) => up.close(r));
+  }
+});
+
+test('WS 半开连接（PR #56）：客户端直接 FIN（不发 close 帧）→ 两端被销毁，连接槽不泄漏', async () => {
+  const { createServer: createUp } = await import('node:http');
+  const { createHash } = await import('node:crypto');
+  const { connect: netConnect } = await import('node:net');
+  const upSockets = [];
+  const up = createUp((req, res) => { res.writeHead(200, { 'content-type': 'text/plain' }); res.end('ok'); });
+  up.on('upgrade', (req, socket) => {
+    upSockets.push(socket);
+    const accept = createHash('sha1')
+      .update(String(req.headers['sec-websocket-key'] ?? '') + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11')
+      .digest('base64');
+    socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ' + accept + '\r\n\r\n');
+  });
+  await new Promise((r) => up.listen(0, '127.0.0.1', r));
+  const proxy = await createPocketProxy({
+    port: 0, host: '127.0.0.1',
+    upstream: { host: '127.0.0.1', port: up.address().port },
+    heartbeat: false,
+  });
+  try {
+    // 客户端：net 裸连接完成 WS 握手（不用 ws 库，方便直接发 FIN 而不发 close 帧）
+    const client = await new Promise((resolve, reject) => {
+      const sock = netConnect(proxy.port, '127.0.0.1', () => {
+        sock.write(
+          'GET /api/events.host HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n' +
+          'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n',
+        );
+      });
+      let buf = '';
+      const timer = setTimeout(() => { sock.destroy(); reject(new Error('握手超时')); }, 3000);
+      sock.on('data', (c) => {
+        buf += c.toString('latin1');
+        if (buf.includes('101')) { clearTimeout(timer); resolve(sock); }
+      });
+      sock.on('error', (e) => { clearTimeout(timer); reject(e); });
+    });
+    assert.ok(upSockets.length >= 1, '上游已建立 WS 连接');
+
+    // 浏览器直接关页：发 FIN（end），不发 WS close 帧
+    const upstreamClosed = new Promise((resolve) => {
+      upSockets[0].once('close', resolve);
+      upSockets[0].once('error', () => resolve('error'));
+    });
+    client.end();
+    const result = await Promise.race([upstreamClosed, new Promise((r) => setTimeout(() => r('timeout'), 2000))]);
+    assert.notEqual(result, 'timeout', '客户端 FIN 后上游连接被销毁（不再 half-open 悬挂）');
+
+    // 代理仍可服务新请求（连接槽未泄漏）
+    const res = await fetch(`http://127.0.0.1:${proxy.port}/after`);
+    assert.equal(res.status, 200);
+  } finally {
+    try { await proxy.close(); } catch { /* 已关 */ }
+    await new Promise((r) => up.close(r));
   }
 });
 
@@ -271,7 +365,19 @@ test('WS upgrade 遇非 101 响应：客户端拿到状态行，不悬挂', asyn
   }
 });
 
-test('desktopEnvPatchScript：注入 dsh-desktop-mode/platform 参数补丁（issue #3/#4）', async () => {
+test('issue #76 回归：插件不再注入 dsh-desktop-* 标记（否则桌面端 2.0.3 会报「打开恢复模式」/403）', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8');
+  // lib/index.js 组装 injectHtml 的地方不能再出现 desktopEnvPatchScript
+  assert.ok(!/desktopEnvPatchScript\s*\(/.test(src), 'index.js 已不再注入桌面参数补丁');
+  // 注入内容本身也不允许带 dsh-desktop- 前缀的标记
+  const { DEFAULT_INJECT, advancedNoticeScript, desktopEnvPatchScript } = await import('../lib/proxy.mjs');
+  const injected = DEFAULT_INJECT + advancedNoticeScript();
+  assert.ok(!injected.includes('dsh-desktop-'), '默认注入内容不含桌面标记');
+  assert.ok(desktopEnvPatchScript('win32').includes('dsh-desktop-mode'), '废弃的补丁函数本身仍保留（仅供旧版兼容）');
+});
+
+test('desktopEnvPatchScript：注入 dsh-desktop-mode/platform 参数补丁（issue #3/#4，已废弃见 issue #76）', async () => {
   const { desktopEnvPatchScript, DEFAULT_INJECT } = await import('../lib/proxy.mjs');
   const patch = desktopEnvPatchScript('darwin');
   assert.ok(patch.includes("dsh-desktop-mode"), '补 mode 参数');
@@ -416,11 +522,11 @@ test('访问令牌认证（issue #13）：公网需登录、cookie 放行、局�
   const r4 = await raw({ ...publicH, 'Content-Type': 'application/x-www-form-urlencoded' }, 'POST', 'token=' + TOKEN, '/pocket-login');
   assert.equal(r4.status, 302, '正确密码重定向');
   const sc = (r4.headers['set-cookie'] || []).join(';');
-  assert.ok(sc.includes('dsh_pocket_token=' + TOKEN), '种 HttpOnly cookie');
+  assert.ok(sc.includes('dsh_pocket_token_' + proxy.port + '=' + TOKEN), '种 HttpOnly cookie（端口隔离名）');
   assert.ok(sc.includes('HttpOnly'), 'HttpOnly');
 
   // 5) 带 cookie → 放行
-  const r5 = await raw({ Host: 'abc.trycloudflare.com', Accept: 'application/json', Cookie: 'dsh_pocket_token=' + TOKEN });
+  const r5 = await raw({ Host: 'abc.trycloudflare.com', Accept: 'application/json', Cookie: 'dsh_pocket_token_' + proxy.port + '=' + TOKEN });
   assert.equal(r5.status, 200, '带 cookie 放行');
   assert.ok(r5.body.includes('dsh'), '内容正常');
 
@@ -429,7 +535,7 @@ test('访问令牌认证（issue #13）：公网需登录、cookie 放行、局�
   assert.equal(r6.status, 200);
   assert.ok(r6.body.includes('访问密码'), '局域网也需要密码（登录页）');
   // 局域网带 cookie → 放行
-  const r6b = await raw({ ...lanH, Cookie: 'dsh_pocket_token=' + TOKEN });
+  const r6b = await raw({ ...lanH, Cookie: 'dsh_pocket_token_' + proxy.port + '=' + TOKEN });
   assert.equal(r6b.status, 200, '局域网带 cookie 放行');
 
   // 7) WS：未认证 → 拒绝
@@ -486,16 +592,16 @@ test('会话保持（issue #33）：登录 cookie 绑定进程 sessionKey，持�
     const r1 = await raw({ Host: 'abc.trycloudflare.com', 'Content-Type': 'application/x-www-form-urlencoded' }, 'POST', 'token=' + TOKEN, '/pocket-login');
     assert.equal(r1.status, 302, '登录成功');
     const sc = (r1.headers['set-cookie'] || []).join(';');
-    assert.ok(sc.includes('dsh_pocket_token=' + cookieOf(TOKEN, SK1)), 'cookie 绑定 sessionKey 派生');
+    assert.ok(sc.includes(tokenCookieName(proxy.port) + '=' + cookieOf(TOKEN, SK1)), 'cookie 绑定 sessionKey 派生');
     assert.ok(sc.includes('Max-Age=2592000'), '持久 cookie（30 天）');
     assert.ok(sc.includes('HttpOnly'), 'HttpOnly');
 
     // 2) 带派生 cookie → 放行
-    const r2 = await raw({ Host: 'abc.trycloudflare.com', Accept: 'application/json', Cookie: 'dsh_pocket_token=' + cookieOf(TOKEN, SK1) }, 'GET', undefined, '/api/hello');
+    const r2 = await raw({ Host: 'abc.trycloudflare.com', Accept: 'application/json', Cookie: tokenCookieName(proxy.port) + '=' + cookieOf(TOKEN, SK1) }, 'GET', undefined, '/api/hello');
     assert.equal(r2.status, 200, '正确 cookie 放行');
 
     // 3) 旧格式 cookie（= PIN 本身）不再放行（升级后旧登录失效，需重新输入）
-    const r3 = await raw({ Host: 'abc.trycloudflare.com', Accept: 'application/json', Cookie: 'dsh_pocket_token=' + TOKEN }, 'GET', undefined, '/api/hello');
+    const r3 = await raw({ Host: 'abc.trycloudflare.com', Accept: 'application/json', Cookie: tokenCookieName(proxy.port) + '=' + TOKEN }, 'GET', undefined, '/api/hello');
     assert.equal(r3.status, 401, '裸 PIN cookie 已失效');
 
     // 4) 模拟 dsh web 重启（新 sessionKey）→ 旧 cookie 失效，需重新登录；新会话 cookie 放行
@@ -507,9 +613,9 @@ test('会话保持（issue #33）：登录 cookie 绑定进程 sessionKey，持�
     });
     try {
       const raw2 = makeRaw(proxy2.port);
-      const r4 = await raw2({ Host: 'abc.trycloudflare.com', Accept: 'application/json', Cookie: 'dsh_pocket_token=' + cookieOf(TOKEN, SK1) }, 'GET', undefined, '/api/hello');
+      const r4 = await raw2({ Host: 'abc.trycloudflare.com', Accept: 'application/json', Cookie: tokenCookieName(proxy2.port) + '=' + cookieOf(TOKEN, SK1) }, 'GET', undefined, '/api/hello');
       assert.equal(r4.status, 401, '重启后旧 cookie 失效（需重新输入）');
-      const r5 = await raw2({ Host: 'abc.trycloudflare.com', Accept: 'application/json', Cookie: 'dsh_pocket_token=' + cookieOf(TOKEN, SK2) }, 'GET', undefined, '/api/hello');
+      const r5 = await raw2({ Host: 'abc.trycloudflare.com', Accept: 'application/json', Cookie: tokenCookieName(proxy2.port) + '=' + cookieOf(TOKEN, SK2) }, 'GET', undefined, '/api/hello');
       assert.equal(r5.status, 200, '新会话 cookie 放行');
     } finally {
       await proxy2.close();
@@ -553,6 +659,58 @@ test('访问令牌按 Host 区分（issue #24）：局域网开关关闭 → 免
     const pub = await raw({ Host: 'abc.trycloudflare.com', Accept: 'text/html' });
     assert.equal(pub.status, 200);
     assert.ok(pub.body.includes('访问密码'), '公网仍返回登录页');
+  } finally {
+    await proxy.close();
+    await new Promise((r) => up.close(r));
+  }
+});
+
+test('局域网访问总开关：关闭后拦截局域网 Host（403 提示页），loopback 与公网放行', async () => {
+  const http = await import('node:http');
+  const up = createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    res.end('<html><body>dsh</body></html>');
+  });
+  await new Promise((r) => up.listen(0, '127.0.0.1', r));
+
+  let lanOn = true;
+  const proxy = await createPocketProxy({
+    port: 0, host: '127.0.0.1',
+    upstream: { host: '127.0.0.1', port: up.address().port },
+    lanAccessEnabled: () => lanOn,
+  });
+  const raw = (host, accept = 'text/html', path = '/') => new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port: proxy.port, path, headers: { Host: host, Accept: accept } }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString('utf8') }));
+    });
+    req.on('error', reject);
+    req.end();
+  });
+
+  try {
+    // 1) 开启：局域网 Host 正常放行
+    const on = await raw('192.168.1.50:3081');
+    assert.equal(on.status, 200, '开启时局域网放行');
+    assert.ok(on.body.includes('dsh'), '内容正常');
+
+    // 2) 关闭：局域网 Host 被拦截（浏览器导航 → 403 提示页）
+    lanOn = false;
+    const off = await raw('192.168.1.50:3081');
+    assert.equal(off.status, 403, '关闭时局域网拒绝');
+    assert.ok(off.body.includes('局域网访问已关闭'), '返回提示页');
+
+    // 3) 关闭：局域网 API 路径 → 403 JSON
+    const offApi = await raw('192.168.1.50:3081', 'application/json', '/api/hello');
+    assert.equal(offApi.status, 403, 'API 返回 403');
+    assert.equal(offApi.body, '{"error":"lan-disabled"}', 'JSON 错误体');
+
+    // 4) 关闭：loopback 与公网（trycloudflare）不受影响
+    const loop = await raw('127.0.0.1:3081');
+    assert.equal(loop.status, 200, 'loopback 放行');
+    const pub = await raw('abc.trycloudflare.com');
+    assert.equal(pub.status, 200, '公网放行');
   } finally {
     await proxy.close();
     await new Promise((r) => up.close(r));
@@ -649,4 +807,235 @@ test('advancedNoticeScript：注入 advanced 模式提示覆盖层（issue #19�
   assert.ok(s.includes('advanced'), '提示 advanced');
   assert.ok(s.includes('compatibility'), '提示切回 compatibility');
   assert.ok(s.includes('position:fixed'), '固定覆盖层（白屏也能看到）');
+});
+
+// ---------- Host 信任边界（issue #66：fail closed） ----------
+
+test('classifyHost（issue #66）：loopback/私网归类，陌生域名一律 public（fail closed）', async () => {
+  const { classifyHost } = await import('../lib/proxy.mjs');
+  // loopback：本机与 cloudflared 回连
+  assert.equal(classifyHost('localhost'), 'loopback');
+  assert.equal(classifyHost('localhost:3081'), 'loopback');
+  assert.equal(classifyHost('127.0.0.1'), 'loopback');
+  assert.equal(classifyHost('127.0.0.1:3081'), 'loopback');
+  assert.equal(classifyHost('[::1]:3081'), 'loopback');
+  assert.equal(classifyHost('0.0.0.0'), 'loopback');
+  assert.equal(classifyHost(''), 'loopback');
+  // lan：RFC1918 私网 / IPv6 ULA / mDNS / NetBIOS 单标签名
+  assert.equal(classifyHost('192.168.1.5:3081'), 'lan');
+  assert.equal(classifyHost('10.0.0.2'), 'lan');
+  assert.equal(classifyHost('172.16.3.4'), 'lan');
+  assert.equal(classifyHost('172.32.1.1'), 'public', '172.32 不在 RFC1918 范围');
+  assert.equal(classifyHost('fd00::5'), 'lan');
+  assert.equal(classifyHost('fe80::1%en0'), 'lan');
+  assert.equal(classifyHost('mypc.local'), 'lan');
+  assert.equal(classifyHost('DESKTOP-ABC123'), 'lan');
+  // public：trycloudflare 及一切陌生域名（自建命名隧道固定域名）→ 强制公网密码
+  assert.equal(classifyHost('abc-def-hij.trycloudflare.com'), 'public');
+  assert.equal(classifyHost('pocket.example.com'), 'public');
+  assert.equal(classifyHost('random.host.org'), 'public');
+});
+
+// ---------- dsh web 浏览器会话 token（issue #77） ----------
+
+test('upstreamPathWithLaunchToken（issue #77）：首屏根路径补 token，已有 cookie / 非根路径不补（防 303 循环）', async () => {
+  const { upstreamPathWithLaunchToken } = await import('../lib/proxy.mjs');
+  const TOK = 'abcDEF123-_launch-token';
+  // 首屏：GET / 且没有 dsh-auth cookie → 补 token
+  assert.equal(upstreamPathWithLaunchToken('/', 'GET', undefined, TOK), `/?token=${TOK}`, '根路径补 token');
+  assert.equal(upstreamPathWithLaunchToken('/', 'GET', 'other=1', TOK), `/?token=${TOK}`, '无会话 cookie 也补');
+  assert.equal(upstreamPathWithLaunchToken('/?x=1', 'GET', undefined, TOK), `/?x=1&token=${TOK}`, '保留原有 query');
+  // 已有会话 cookie → 不补（否则上游 303 会死循环）
+  assert.equal(upstreamPathWithLaunchToken('/', 'GET', 'dsh-auth-abc=xyz', TOK), '/', '有会话 cookie 不补');
+  // 非根路径 / 非 GET → 不补
+  assert.equal(upstreamPathWithLaunchToken('/api/events.mux', 'GET', undefined, TOK), '/api/events.mux', 'API 路径不补');
+  assert.equal(upstreamPathWithLaunchToken('/', 'POST', undefined, TOK), '/', '非 GET 不补');
+  // 老版本 dsh（无 token）→ 原样转发
+  assert.equal(upstreamPathWithLaunchToken('/', 'GET', undefined, ''), '/', '无 token 时原样');
+  // 登录成功后的强制握手标记：即使带着旧 cookie 也重做一次（cookie 可能已过期/被撤销）
+  assert.equal(upstreamPathWithLaunchToken('/?dsh-pocket-auth=1', 'GET', 'dsh-auth-abc=1', TOK),
+    `/?dsh-pocket-auth=1&token=${TOK}`, '带强制标记时无视旧 cookie');
+});
+
+// ---------- 清理历史遗留的 dsh-desktop-* 参数（issue #75） ----------
+
+test('stripDesktopMarkers（issue #75）：URL 上的 dsh-desktop-* 参数全部清掉，其余原样', async () => {
+  const { stripDesktopMarkers } = await import('../lib/proxy.mjs');
+  // 2.1.1 及更早注入、被 history.replaceState 写进 URL 的那两个
+  assert.equal(
+    stripDesktopMarkers('/?dsh-desktop-mode=compatibility&dsh-desktop-platform=win32'),
+    '/',
+    '清掉注入的 mode/platform',
+  );
+  // 只清 dsh-desktop- 前缀，别的参数一个都不能动
+  assert.equal(
+    stripDesktopMarkers('/?a=1&dsh-desktop-mode=compatibility&b=2'),
+    '/?a=1&b=2',
+    '保留其他 query 参数',
+  );
+  assert.equal(
+    stripDesktopMarkers('/api/events.mux?dsh-desktop-material=mica&x=9'),
+    '/api/events.mux?x=9',
+    'API / WS 握手路径同样清理（不只对 GET / 生效）',
+  );
+  // 五个标记齐备也要清——上游 decideDesktopBrowserAccess 见到前缀就 403
+  assert.equal(
+    stripDesktopMarkers(
+      '/?dsh-desktop-mode=compatibility&dsh-desktop-platform=darwin&dsh-desktop-material=mica&dsh-desktop-version=2.0.3&dsh-desktop-mica=1',
+    ),
+    '/',
+    '整组标记一律清掉',
+  );
+  // 无该前缀参数时原样返回（不重写 URL，避免把 %20 之类改写得不一样）
+  assert.equal(stripDesktopMarkers('/?x=1'), '/?x=1', '无目标参数时原样返回');
+  assert.equal(stripDesktopMarkers('/'), '/', '无 query 时原样返回');
+  assert.equal(stripDesktopMarkers(undefined), undefined, '非法输入不抛错');
+});
+
+test('端到端（issue #75）：代理转发前清掉 dsh-desktop-*，上游拿到的是干净路径', async () => {
+  const http = await import('node:http');
+  const seen = [];
+  const upstream = http.createServer((req, res) => {
+    seen.push({ method: req.method, url: req.url });
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    res.end('<html><head></head><body>ok</body></html>');
+  });
+  await new Promise((r) => upstream.listen(0, '127.0.0.1', r));
+  const { createPocketProxy } = await import('../lib/proxy.mjs');
+  const proxy = await createPocketProxy({
+    port: 0,
+    host: '127.0.0.1',
+    upstream: { host: '127.0.0.1', port: upstream.address().port },
+  });
+  try {
+    for (const p of [
+      '/?dsh-desktop-mode=compatibility&dsh-desktop-platform=win32',
+      '/api/events.mux?dsh-desktop-material=mica',
+    ]) {
+      const res = await fetch(`http://127.0.0.1:${proxy.port}${p}`);
+      await res.text();
+    }
+    assert.deepEqual(
+      seen.map((s) => s.url),
+      ['/', '/api/events.mux'],
+      '上游收到的路径里不应再有 dsh-desktop-* 参数',
+    );
+  } finally {
+    await proxy.close();
+    await new Promise((r) => upstream.close(r));
+  }
+});
+
+test('端到端（issue #77）：代理自动补 token 完成会话握手——首屏 303 拿 cookie，之后正常返回首页', async () => {
+  const http = await import('node:http');
+  const TOK = 'launch-token-abc123';
+  const seen = [];
+  // 模拟新版 dsh web 的浏览器会话认证：/?token= → 303 + Set-Cookie；有 cookie → 首页；否则 401
+  const upstream = http.createServer((req, res) => {
+    seen.push(req.url);
+    const u = new URL(req.url ?? '/', 'http://x');
+    if (u.pathname === '/' && u.searchParams.get('token') === TOK) {
+      res.writeHead(303, { location: '/', 'set-cookie': 'dsh-auth-abc=1; Path=/; HttpOnly; SameSite=Strict' });
+      res.end();
+      return;
+    }
+    if (String(req.headers.cookie ?? '').includes('dsh-auth-')) {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.end('<html><body>index</body></html>');
+      return;
+    }
+    res.writeHead(401, { 'content-type': 'text/plain' });
+    res.end('dsh web authentication required; reopen the URL printed by dsh web');
+  });
+  await new Promise((r) => upstream.listen(0, '127.0.0.1', r));
+  const proxy = await createPocketProxy({
+    port: 0, host: '127.0.0.1', upstream: { host: '127.0.0.1', port: upstream.address().port },
+    injectHtml: '', launchToken: () => TOK,
+  });
+  const base = `http://127.0.0.1:${proxy.port}`;
+  try {
+    // 第一次访问（手机扫码进来的 URL 没有 token）：代理补 token → 上游 303 + 下发 cookie
+    const first = await fetch(`${base}/`, { redirect: 'manual', headers: { host: 'abc.trycloudflare.com' } });
+    assert.equal(first.status, 303, '首屏触发 token 交换（303）');
+    const setCookie = first.headers.get('set-cookie') ?? '';
+    assert.ok(setCookie.includes('dsh-auth-'), '下发会话 cookie');
+    assert.ok(seen.some((u) => u.includes(`token=${TOK}`)), '上游确实收到了启动 token');
+
+    // 浏览器带着 cookie 再访问：不再补 token → 直接拿到首页（不会 303 循环）
+    const second = await fetch(`${base}/`, { redirect: 'manual', headers: { host: 'abc.trycloudflare.com', cookie: 'dsh-auth-abc=1' } });
+    assert.equal(second.status, 200, '带 cookie 直接返回首页');
+    assert.match(await second.text(), /index/, '首页内容正确');
+    assert.ok(!seen[seen.length - 1].includes('token='), '带 cookie 的请求不再补 token（防 303 循环）');
+  } finally {
+    await proxy.close();
+    await new Promise((r) => upstream.close(r));
+  }
+});
+
+test('?token=<原始 PIN> 直达种 HttpOnly cookie，issue #35', async () => {
+  // 背景：从公网 URL 首次进入带 ?token=<密码> 时，浏览器需要把 cookie 种下，
+  // 否则后续子资源（assets/*.js 等）不带 token 也不带 cookie → 401 → 白屏。
+  const http = await import('node:http');
+  const TOKEN = 'pin12345';
+  const SK = 'sess-key';
+  const up = createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    res.end(`<html><head><script src="/assets/x.js"></script></head><body>hi</body></html>`);
+  });
+  await new Promise((r) => up.listen(0, '127.0.0.1', r));
+  const proxy = await createPocketProxy({
+    port: 0, host: '127.0.0.1',
+    upstream: { host: '127.0.0.1', port: up.address().port },
+    auth: { getToken: () => TOKEN, isProtected: () => true, sessionKey: SK },
+  });
+  const crypto = await import('node:crypto');
+  const hashed = crypto.createHash('sha256').update(`${TOKEN}:${SK}`).digest('hex');
+  try {
+    // 1) 首次带 ?token=<原始 PIN>：200 + set-cookie（哈希值）
+    const r1 = await new Promise((resolve, reject) => {
+      const req = http.request({ host: '127.0.0.1', port: proxy.port, path: `/?token=${TOKEN}`, headers: { Host: 'x:3081', Accept: 'text/html' } }, (res) => {
+        res.resume(); res.on('end', () => resolve({ status: res.statusCode, setCookie: res.headers['set-cookie'] }));
+      });
+      req.on('error', reject); req.end();
+    });
+    assert.equal(r1.status, 302, '?token= 直达 → 302 洗参（PR#8：凭据不留地址栏/日志/Referer）');
+    assert.ok(String(r1.setCookie ?? '').length > 0 || Array.isArray(r1.setCookie), '302 响应内联种 cookie');
+    const sc = Array.isArray(r1.setCookie) ? r1.setCookie.join(';') : String(r1.setCookie ?? '');
+    assert.ok(sc.includes(`dsh_pocket_token_${proxy.port}=${hashed}`), `种 cookie 含哈希值（实得：${sc.slice(0, 200)}）`);
+    assert.ok(sc.includes('HttpOnly'), 'HttpOnly 标记');
+    assert.ok(sc.includes('Max-Age=2592000'), '30 天持久');
+    // 洗参后 302 目标不再带 ?token=（减一个 cookie 头也无妨，上一断言已验）
+    assert.ok(!String(sc).includes('token=wrongpin'), '302 目标路径不带凭据');
+
+    // 2) 用刚种的 cookie 访问子资源：200（不再依赖 ?token=）
+    const r2 = await new Promise((resolve, reject) => {
+      const req = http.request({ host: '127.0.0.1', port: proxy.port, path: '/assets/x.js', headers: { Host: 'x:3081', Cookie: `dsh_pocket_token_${proxy.port}=${hashed}` } }, (res) => {
+        res.resume(); res.on('end', () => resolve(res.statusCode));
+      });
+      req.on('error', reject); req.end();
+    });
+    assert.equal(r2, 200, '子资源 200');
+
+    // 3) 没 cookie 也没 ?token=：401
+    const r3 = await new Promise((resolve, reject) => {
+      const req = http.request({ host: '127.0.0.1', port: proxy.port, path: '/assets/x.js', headers: { Host: 'x:3081' } }, (res) => {
+        res.resume(); res.on('end', () => resolve(res.statusCode));
+      });
+      req.on('error', reject); req.end();
+    });
+    assert.equal(r3, 401, '无认证 → 401');
+
+    // 4) 错误 PIN：401 + 不种 cookie
+    const r4 = await new Promise((resolve, reject) => {
+      const req = http.request({ host: '127.0.0.1', port: proxy.port, path: '/?token=wrongpin', headers: { Host: 'x:3081', Accept: 'text/html' } }, (res) => {
+        res.resume(); res.on('end', () => resolve({ status: res.statusCode, setCookie: res.headers['set-cookie'] }));
+      });
+      req.on('error', reject); req.end();
+    });
+    assert.equal(r4.status, 200, '错误密码走登录页（200）');
+    assert.ok(!String(r4.setCookie ?? '').includes('dsh_pocket_token'), '错误密码不种 cookie');
+  } finally {
+    await proxy.close();
+    await new Promise((r) => up.close(r));
+  }
 });

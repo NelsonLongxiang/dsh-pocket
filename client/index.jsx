@@ -7,7 +7,7 @@
 // 注：Web Push 已移除——浏览器推送依赖 Google FCM（Chrome）等境外服务，
 // 国内直连被墙，普通用户用不了。专注扫码同屏这一件事。
 
-import { createElement as h, useEffect, useState } from 'react';
+import { createElement as h, useEffect, useRef, useState } from 'react';
 
 import { POCKET_RPC_CHANNEL, POCKET_ENDPOINTS, redactStatus, compareVersions } from './api.js';
 import { mobileApply } from './mobile/mobile-apply.tsx';
@@ -42,6 +42,7 @@ const styles = {
   btn: { font: 'inherit', cursor: 'pointer', border: '1px solid var(--dsw-alias-button-ghost-active-border, var(--dsw-alias-border-l2,#d1d5db))', background: 'var(--dsw-alias-bg-layer-1,#fff)', color: 'var(--dsw-alias-label-primary,inherit)', height: 36, padding: '0 16px', borderRadius: 999, fontSize: 13, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' },
   qr: { width: 220, height: 220, borderRadius: 10, border: '1px solid var(--dsw-alias-border-l2,#e5e7eb)', margin: '8px 0' },
   warn: { color: 'var(--dsw-alias-state-warn-primary,#b45309)', fontSize: 12, lineHeight: 1.5 },
+  input: { font: 'inherit', fontSize: 13, padding: '8px 10px', border: '1px solid var(--dsw-alias-border-l2,#d1d5db)', borderRadius: 8, background: 'var(--dsw-alias-bg-layer-1,#fff)', color: 'var(--dsw-alias-label-primary,inherit)', width: '100%', boxSizing: 'border-box' },
 };
 
 function PocketSettingsTab({ rpcCall, t }) {
@@ -165,10 +166,17 @@ function PocketSettingsTab({ rpcCall, t }) {
 
   // 安全免责声明（issue #31）：每次开启公网都必须先弹框勾选「我已知情」。
   // 服务端同样强制（tunnel.start 需 disclaimer: true），防绕过前端直接调 RPC。
+
   const [disclaimerOpen, setDisclaimerOpen] = useState(false);
   const [disclaimerChecked, setDisclaimerChecked] = useState(false);
 
   const doStartTunnel = async () => {
+    // 命名隧道模式：Token/域名没配齐就不发起（服务端同样会拒绝）
+    const cfg = status?.tunnelConfig;
+    if (cfg?.mode === 'named' && (!cfg.hostname || !cfg.tokenSet)) {
+      setError(t('namedNeedCfg'));
+      return;
+    }
     setBusy(true);
     setError(null);
     setTunnelState({ phase: 'starting', detail: '正在开启…', startedAt: Date.now() });
@@ -195,6 +203,45 @@ function PocketSettingsTab({ rpcCall, t }) {
     try { setStatus(await call(POCKET_ENDPOINTS.tunnelStop, {})); } catch { /* 忽略 */ }
   };
 
+  // 公网模式（issue #66）：随机域名（默认零配置）/ 固定域名（Cloudflare 命名隧道 + Tunnel Token）
+  // tunnelCfg：编辑态 { hostname, token, err } | null；token 输入留空 = 保持已存的 Token 不变
+  const [tunnelCfg, setTunnelCfg] = useState(null);
+  const switchToQuick = async () => {
+    try { setStatus(await call(POCKET_ENDPOINTS.tunnelSetConfig, { mode: 'quick' })); } catch (err) { setError(err.message); }
+  };
+  const saveNamedTunnel = async () => {
+    try {
+      setStatus(await call(POCKET_ENDPOINTS.tunnelSetConfig, {
+        mode: 'named',
+        hostname: tunnelCfg?.hostname ?? '',
+        token: tunnelCfg?.token || undefined, // 留空不覆盖已存 Token
+      }));
+      setTunnelCfg(null);
+    } catch (err) {
+      setTunnelCfg((c) => ({ ...c, err: err.message }));
+    }
+  };
+
+  // 恢复出厂设置：清本机设置 + 重设随机密码（弹窗确认；RPC 端也强制校验 confirm）
+  const [resetOpen, setResetOpen] = useState(false);
+  const doFactoryReset = async () => {
+    setResetOpen(false);
+    setBusy(true);
+    setError(null);
+    try {
+      setStatus(await call(POCKET_ENDPOINTS.pocketReset, { confirm: true }));
+      setTunnelCfg(null);
+      setCustomPin(null);
+      setAdvOpen(false);
+      showToast(t('resetDone'));
+    } catch (err) {
+      setError(err.message);
+      showToast(t('resetFailed'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   // 刷新局域网访问密码（旧密码立即作废）
   const refreshLanPin = async () => {
     try {
@@ -211,7 +258,32 @@ function PocketSettingsTab({ rpcCall, t }) {
     } catch { /* 忽略 */ }
   };
 
-  // 自定义访问密码（issue #33）：公网/局域网各自设固定 8 位数字；自定义后公网不再自动轮换。
+  // 局域网访问总开关：关闭后局域网扫码/链接直接失效（公网不受影响）。
+  // 切换前弹窗确认（弹窗提醒）；服务端用 setLanEnabled 持久化，代理按 Host 实时拦截。
+  const [lanToggleOpen, setLanToggleOpen] = useState(null); // null | true | false（目标 on 状态）
+  const requestLanToggle = (on) => setLanToggleOpen(on);
+  const confirmLanToggle = async () => {
+    const on = lanToggleOpen;
+    setLanToggleOpen(null);
+    if (on === null) return;
+    try {
+      const r = await call(POCKET_ENDPOINTS.lanSetEnabled, { on });
+      setStatus((s) => ({ ...s, lanEnabled: r.lanEnabled }));
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  // 局域网地址手动覆盖（Tailscale/VPN 等远程访问场景）：空值恢复自动选择
+  const setLanAddress = async (ip) => {
+    try {
+      setStatus(await call(POCKET_ENDPOINTS.lanSetOverride, { ip }));
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  // 自定义访问密码（issue #33）：公网/局域网各自设固定 8 位密码（英文字母大小写或数字）；自定义后公网不再自动轮换。
   // customPin: { which: 'public'|'lan', value, err } | null —— 正在输入自定义密码的区块
   const [customPin, setCustomPin] = useState(null);
   const saveCustomPin = async (which) => {
@@ -233,18 +305,17 @@ function PocketSettingsTab({ rpcCall, t }) {
   const customPinRow = (which) => h('div', { style: { marginTop: 6, fontSize: 12, color: 'var(--dsw-alias-label-secondary,#6b7280)', lineHeight: 1.5 } },
     t('customizing'),
     h('input', {
-      style: { width: 110, margin: '0 6px', padding: '4px 8px', fontSize: 14, letterSpacing: 2, textAlign: 'center', border: '1px solid var(--dsw-alias-border-l2,#d1d5db)', borderRadius: 6, outline: 'none' },
+      style: { width: 130, margin: '0 6px', padding: '4px 8px', fontSize: 14, letterSpacing: 1, textAlign: 'center', border: '1px solid var(--dsw-alias-border-l2,#d1d5db)', borderRadius: 6, outline: 'none' },
       type: 'password',
-      inputMode: 'numeric',
       maxLength: 8,
       value: customPin?.value ?? '',
       autoFocus: true,
-      onChange: (e) => setCustomPin((c) => ({ ...c, value: e.target.value.replace(/\D/g, ''), err: null })),
+      onChange: (e) => setCustomPin((c) => ({ ...c, value: e.target.value.replace(/[^a-zA-Z0-9]/g, ''), err: null })),
       onKeyDown: (e) => { if (e.key === 'Enter') saveCustomPin(which); if (e.key === 'Escape') setCustomPin(null); },
     }),
     h('button', { style: { ...styles.btn, height: 26, padding: '0 10px', fontSize: 12, marginLeft: 2 }, onClick: () => saveCustomPin(which) }, t('save')),
     h('button', { style: { ...styles.btn, height: 26, padding: '0 10px', fontSize: 12 }, onClick: () => setCustomPin(null) }, t('cancel')),
-    customPin?.err ? h('div', { style: { color: 'var(--dsw-alias-state-error-primary,#dc2626)', marginTop: 4 } }, customPin.err) : null,
+    customPin?.err ? h('div', { style: { color: 'var(--dsw-alias-state-error-primary,#dc2626)', marginTop: 4 } }, errText(customPin.err)) : null,
   );
   // 「自定义」按钮（非输入态显示在密码行末尾）
   const customBtn = (which) => h('button', { style: { ...styles.btn, height: 26, padding: '0 10px', fontSize: 12, marginLeft: 8 }, onClick: () => setCustomPin({ which, value: '', err: null }) }, t('customize'));
@@ -255,6 +326,50 @@ function PocketSettingsTab({ rpcCall, t }) {
   const tunnelStarting = ['downloading', 'starting', 'registering'].includes(tunnelPhase);
   const tunnelStateDetail = tunnelState?.detail ?? '';
   const tunnelStateStarted = tunnelState?.startedAt ?? null;
+  // 公网模式视图（issue #66）：{ mode, hostname, tokenSet }
+  const tunnelModeView = status?.tunnelConfig ?? { mode: 'quick', hostname: '', tokenSet: false };
+  const namedMode = tunnelModeView.mode === 'named';
+  // 模式按钮选中态高亮：固定域名模式本身，或正在编辑固定域名配置，都视为「选中」
+  const namedActive = namedMode || tunnelCfg !== null;
+  // 后端错误消息统一为「中文 | English」混排；按当前界面语言只显示对应一半
+  const errText = (msg) => {
+    const s = String(msg ?? '');
+    const i = s.indexOf(' | ');
+    if (i < 0) return s;
+    return (t('ok') === POCKET_ZH.ok ? s.slice(0, i) : s.slice(i + 3)).trim();
+  };
+  // 轻量 Toast：操作成功/失败后短暂提示（自动消失，不打断操作）
+  const [toast, setToast] = useState(null);
+  const toastTimer = useRef(null);
+  const showToast = (text) => {
+    setToast(text);
+    clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 2600);
+  };
+  useEffect(() => () => clearTimeout(toastTimer.current), []);
+  const modeBtnStyle = (active) => ({
+    ...styles.btn, height: 28, padding: '0 12px', fontSize: 12,
+    fontWeight: active ? 600 : 400,
+    background: active ? 'var(--dsw-alias-button-primary-fill, var(--dsw-alias-brand-primary,#4f6ef7))' : 'var(--dsw-alias-bg-layer-1,#fff)',
+    color: active ? 'var(--dsw-alias-label-primary-foreground, #fff)' : 'var(--dsw-alias-label-primary,inherit)',
+  });
+  // iOS 风格小开关（重排后统一用：局域网总开关 / 局域网密码开关）
+  const Switch = (on, onClick) => h('button', {
+    role: 'switch', 'aria-checked': !!on,
+    style: { flexShrink: 0, width: 40, height: 22, borderRadius: 11, border: 'none', padding: 0, position: 'relative', cursor: 'pointer', font: 'inherit', background: on ? 'var(--dsw-alias-button-primary-fill, var(--dsw-alias-brand-primary,#4f6ef7))' : 'var(--dsw-alias-border-l2,#d1d5db)' },
+    onClick,
+  }, h('span', { style: { position: 'absolute', top: 2, left: on ? 20 : 2, width: 18, height: 18, borderRadius: '50%', background: '#fff' } }));
+  // 卡片内主内容：二维码 + 地址 + 提示
+  const qrArea = (src, url, hint) => h('div', { style: { background: 'var(--dsw-alias-bg-layer-2,#f3f4f6)', borderRadius: 10, padding: '10px 12px', textAlign: 'center', margin: '10px 0' } },
+    h('img', { src, alt: 'QR', style: styles.qr }),
+    h('div', { style: styles.code }, url),
+    h('div', { style: styles.muted }, hint));
+  // 设置行：上分隔线，内部第一行 = 左标签 + 右操作；extra 作为第二段渲染
+  const row = (label, control, extra) => h('div', { style: { borderTop: '1px solid var(--dsw-alias-border-l2,#e5e7eb)', paddingTop: 9, marginTop: 9 } },
+    h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 } },
+      h('span', { style: { fontSize: 13 } }, label), control), extra ?? null);
+  // 高级（手动选地址）展开态
+  const [advOpen, setAdvOpen] = useState(false);
 
   return h('div', { style: styles.card },
     h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 } },
@@ -305,78 +420,179 @@ function PocketSettingsTab({ rpcCall, t }) {
         : updateInfo.result === 'ok'
           ? (updateInfo.autoRestart ? t('updatedAutoDetail')
             : t('updatedRestartDetail'))
-        : updateInfo.result === 'fail' ? fmt(t, 'updateFailed', { err: updateInfo.output || t('unknownError') })
+        : updateInfo.result === 'fail' ? fmt(t, 'updateFailed', { err: errText(updateInfo.output) || t('unknownError') })
         : fmt(t, 'versionRange', { cur: updateInfo.current, latest: updateInfo.latest })),
     ) : null,
 
-    // 局域网
+    // 局域网：标题行自带总开关 → 二维码+地址 → 设置行（访问密码 / 高级·手动选地址）
     h('div', { style: styles.block },
-      h('div', { style: { fontWeight: 600, fontSize: 13 } }, t('lanTitle')),
-      lanUrl
-        ? h('div', null,
-          h('img', { src: status.lanQr, alt: 'LAN QR', style: styles.qr }),
-          h('div', { style: styles.code }, lanUrl),
-          h('div', { style: styles.muted }, t('lanHint')),
-          // 访问密码开关（issue #24）：默认开启；关闭后扫码直连（仅同一局域网设备可访问）
-          h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 } },
-            h('span', { style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary,#6b7280)' } }, t('lanPin')),
-            h('button', {
-              style: { ...styles.btn, height: 28, padding: '0 12px', fontSize: 12, fontWeight: status?.lanAuthEnabled !== false ? 600 : 400, background: status?.lanAuthEnabled !== false ? 'var(--dsw-alias-button-primary-fill, var(--dsw-alias-brand-primary,#4f6ef7))' : 'var(--dsw-alias-bg-layer-1,#fff)', color: status?.lanAuthEnabled !== false ? 'var(--dsw-alias-label-primary-foreground, #fff)' : 'var(--dsw-alias-label-primary,inherit)' },
-              onClick: () => setLanAuth(true),
-            }, t('on')),
-            h('button', {
-              style: { ...styles.btn, height: 28, padding: '0 12px', fontSize: 12, fontWeight: status?.lanAuthEnabled === false ? 600 : 400, background: status?.lanAuthEnabled === false ? 'var(--dsw-alias-state-error-primary,#dc2626)' : 'var(--dsw-alias-bg-layer-1,#fff)', color: status?.lanAuthEnabled === false ? '#fff' : 'var(--dsw-alias-label-primary,inherit)' },
-              onClick: () => setLanAuth(false),
-            }, t('off')),
-          ),
-          status?.lanAuthEnabled !== false
-            ? (customPin?.which === 'lan'
-                ? customPinRow('lan')
-                : h('div', { style: { marginTop: 6, fontSize: 12, color: 'var(--dsw-alias-label-secondary,#6b7280)', lineHeight: 1.5 } },
-                  fmt(t, status?.lanPinCustom ? 'lanPinCustomValue' : 'lanPinValue', { pin: status.lanToken }),
-                  h('button', { style: { ...styles.btn, height: 26, padding: '0 10px', fontSize: 12, marginLeft: 8 }, onClick: refreshLanPin }, t('refresh')),
-                  customBtn('lan'),
-                ))
-            : h('div', { style: { marginTop: 6, fontSize: 12, color: 'var(--dsw-alias-state-warn-primary,#b45309)', lineHeight: 1.5 } },
-              t('lanPinOff')),
-        )
-        : h('div', { style: styles.muted }, t('lanStarting')),
+      h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between' } },
+        h('span', { style: { fontWeight: 600, fontSize: 13 } }, t('lanAccess')),
+        Switch(status?.lanEnabled !== false, () => requestLanToggle(status?.lanEnabled === false)),
+      ),
+      status?.lanEnabled === false
+        ? h('div', { style: { marginTop: 8, fontSize: 12, color: 'var(--dsw-alias-state-warn-primary,#b45309)', lineHeight: 1.5 } }, t('lanDisabledHint'))
+        : (lanUrl
+          ? h('div', null,
+            qrArea(status.lanQr, lanUrl, t('lanHint')),
+            // 访问密码行：开关 + 值（关闭时提示直连）
+            row(t('lanPin'), Switch(status?.lanAuthEnabled !== false, () => setLanAuth(status?.lanAuthEnabled === false)),
+              status?.lanAuthEnabled === false
+                ? h('div', { style: { ...styles.muted, marginTop: 6 } }, t('lanPinOff'))
+                : (customPin?.which === 'lan'
+                  ? customPinRow('lan')
+                  : h('div', { style: { marginTop: 6, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+                    h('span', { style: { fontFamily: 'ui-monospace,Menlo,monospace', fontSize: 13, letterSpacing: 1 } }, status.lanToken),
+                    h('button', { style: { ...styles.btn, height: 26, padding: '0 10px', fontSize: 12 }, onClick: refreshLanPin }, t('refresh')),
+                    customBtn('lan'),
+                    status?.lanPinCustom ? h('span', { style: { fontSize: 11, color: 'var(--dsw-alias-state-warn-primary,#b45309)' } }, t('pinCustomHint')) : null,
+                  ))),
+            // 高级：手动选地址（默认收起）
+            row(t('advAddress'),
+              h('button', { style: { border: 'none', background: 'none', font: 'inherit', cursor: 'pointer', fontSize: 12, color: 'var(--dsw-alias-label-tertiary,#8b93a1)', padding: 0 }, onClick: () => setAdvOpen((v) => !v) },
+                (status?.lanIpOverride || t('lanAddressAuto')) + ' ›'),
+              advOpen ? h('div', { style: { marginTop: 8 } },
+                h('label', { style: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--dsw-alias-label-secondary,#6b7280)' } },
+                  t('lanAddress'),
+                  h('select', {
+                    value: status?.lanIpOverride || '',
+                    onChange: (e) => setLanAddress(e.target.value),
+                    style: { font: 'inherit', height: 30, padding: '0 8px', borderRadius: 8, border: '1px solid var(--dsw-alias-border-l2,#d1d5db)', background: 'var(--dsw-alias-bg-layer-1,#fff)', color: 'var(--dsw-alias-label-primary,inherit)' },
+                  },
+                  h('option', { value: '' }, t('lanAddressAuto')),
+                  (status?.lanCandidates || []).map((ip) => h('option', { key: ip, value: ip }, ip)),
+                  ),
+                ),
+              ) : null),
+          )
+          : h('div', { style: styles.muted }, t('lanStarting'))),
     ),
 
-    // 公网
+    // 公网：标题行自带 开启/关闭 → 开启后：二维码+地址、地址模式行、访问密码行
     h('div', { style: styles.block },
-      h('div', { style: { fontWeight: 600, fontSize: 13 } }, t('wanTitle')),
+      h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between' } },
+        h('span', { style: { fontWeight: 600, fontSize: 13 } }, t('wanAccess')),
+        tunnelUrl
+          ? h('button', { style: { ...styles.btn, height: 28, padding: '0 12px', fontSize: 12, color: 'var(--dsw-alias-state-error-primary,#dc2626)' }, onClick: stopTunnel }, t('stopTunnel'))
+          : h('button', { style: { ...styles.primary, height: 28, padding: '0 14px', fontSize: 12 }, onClick: startTunnel, disabled: busy || tunnelStarting }, busy || tunnelStarting ? t('opening') : t('enable')),
+      ),
+      tunnelStarting
+        ? h('div', { style: { marginTop: 8, fontSize: 12, color: 'var(--dsw-alias-label-secondary,#6b7280)' } },
+          tunnelPhase === 'downloading'
+            ? fmt(t, 'downloading', { s: elapsed(tunnelStateStarted) })
+            : fmt(t, 'connecting', { s: elapsed(tunnelStateStarted), suffix: elapsed(tunnelStateStarted) > 30 ? t('slowHint') : '' }))
+        : tunnelPhase === 'error'
+          ? h('div', { style: { marginTop: 8, fontSize: 12, color: 'var(--dsw-alias-state-error-primary,#dc2626)' } },
+            fmt(t, 'error', { detail: errText(tunnelStateDetail) || t('unknownError') }))
+          : (!tunnelUrl && !isDesktop ? h('div', { style: { ...styles.muted, marginTop: 8 } }, t('wanOffHint')) : null),
       tunnelUrl
         ? h('div', null,
-          h('img', { src: status.tunnelQr, alt: 'Tunnel QR', style: styles.qr }),
-          h('div', { style: styles.code }, tunnelUrl),
-          h('div', { style: styles.muted }, t('wanHint')),
+          qrArea(status.tunnelQr, tunnelUrl, namedMode ? t('namedRunningHint') : t('wanHint')),
+          // 地址模式行（随机/固定；固定域名选中或编辑时高亮）
+          row(t('modeLabel'),
+            h('span', { style: { display: 'inline-flex', gap: 6 } },
+              h('button', { style: modeBtnStyle(!namedActive), onClick: namedMode ? switchToQuick : (tunnelCfg ? () => setTunnelCfg(null) : undefined) }, t('modeQuick')),
+              h('button', { style: modeBtnStyle(namedActive), onClick: () => setTunnelCfg(tunnelCfg ? null : { hostname: tunnelModeView.hostname ?? '', token: '', err: null }) }, t('modeNamed')),
+            ),
+            h('div', { style: { marginTop: 6 } },
+              // 刚保存固定域名但当前连接仍是随机域名：需关闭后重新开启才生效
+              namedMode && /trycloudflare\.com/i.test(tunnelUrl ?? '') ? h('div', { style: { ...styles.warn } }, t('namedTakeEffect')) : null,
+              // 固定域名：已保存摘要 + 修改入口（非编辑态）
+              namedMode && !tunnelCfg ? h('div', { style: { ...styles.muted } },
+                fmt(t, 'namedSummary', { host: tunnelModeView.hostname || '—', token: tunnelModeView.tokenSet ? t('namedTokenSet') : t('namedTokenMissing') }),
+                h('button', { style: { ...styles.btn, height: 26, padding: '0 10px', fontSize: 12, marginLeft: 8 }, onClick: () => setTunnelCfg({ hostname: tunnelModeView.hostname ?? '', token: '', err: null }) }, t('namedEdit')),
+                h('div', { style: { ...styles.muted, marginTop: 4 } }, t('namedHow')),
+                !tunnelModeView.tokenSet || !tunnelModeView.hostname ? h('div', { style: { marginTop: 2, color: 'var(--dsw-alias-state-error-primary,#dc2626)' } }, t('namedNeedCfg')) : null,
+              ) : null,
+              // 固定域名：编辑表单（域名 + Tunnel Token，Token 留空保持不变）
+              tunnelCfg ? h('div', { style: { marginTop: 6, fontSize: 12, color: 'var(--dsw-alias-label-secondary,#6b7280)', lineHeight: 1.6 } },
+                h('div', null,
+                  t('namedHostnameLabel'),
+                  h('input', {
+                    style: { margin: '4px 0 0 6px', padding: '4px 8px', fontSize: 13, border: '1px solid var(--dsw-alias-border-l2,#d1d5db)', borderRadius: 6, outline: 'none', width: 200 },
+                    placeholder: 'pocket.example.com',
+                    value: tunnelCfg.hostname ?? '',
+                    autoFocus: true,
+                    onChange: (e) => setTunnelCfg((c) => ({ ...c, hostname: e.target.value.trim(), err: null })),
+                    onKeyDown: (e) => { if (e.key === 'Enter') saveNamedTunnel(); if (e.key === 'Escape') setTunnelCfg(null); },
+                  }),
+                ),
+                h('div', { style: { marginTop: 6 } },
+                  t('namedTokenLabel'),
+                  h('input', {
+                    style: { margin: '4px 0 0 6px', padding: '4px 8px', fontSize: 13, border: '1px solid var(--dsw-alias-border-l2,#d1d5db)', borderRadius: 6, outline: 'none', width: 240, fontFamily: 'ui-monospace,Menlo,monospace' },
+                    type: 'password',
+                    value: tunnelCfg.token ?? '',
+                    onChange: (e) => setTunnelCfg((c) => ({ ...c, token: e.target.value.trim(), err: null })),
+                    onKeyDown: (e) => { if (e.key === 'Enter') saveNamedTunnel(); if (e.key === 'Escape') setTunnelCfg(null); },
+                  }),
+                ),
+                h('div', { style: { marginTop: 6, display: 'flex', gap: 8 } },
+                  h('button', { style: { ...styles.btn, height: 26, padding: '0 10px', fontSize: 12 }, onClick: saveNamedTunnel }, t('save')),
+                  h('button', { style: { ...styles.btn, height: 26, padding: '0 10px', fontSize: 12 }, onClick: () => setTunnelCfg(null) }, t('cancel')),
+                ),
+                h('div', { style: { ...styles.muted, marginTop: 6 } }, t('namedHow')),
+                h('div', { style: { marginTop: 2, fontSize: 11, color: 'var(--dsw-alias-state-warn-primary,#b45309)', lineHeight: 1.5 } }, t('namedSecurity')),
+                tunnelCfg.err ? h('div', { style: { color: 'var(--dsw-alias-state-error-primary,#dc2626)', marginTop: 4 } }, errText(tunnelCfg.err)) : null,
+              ) : null,
+            ),
+          ),
+          // 访问密码行：值 + 自定义（自定义输入态整体替换）
           status.accessToken
-            ? (customPin?.which === 'public'
-                ? customPinRow('public')
-                : h('div', { style: { marginTop: 6, fontSize: 12, color: 'var(--dsw-alias-label-secondary,#6b7280)', lineHeight: 1.5 } },
-                  fmt(t, status?.publicPinCustom ? 'wanPinCustom' : 'wanPin', { pin: status.accessToken }),
-                  customBtn('public'),
-                  status?.publicPinCustom ? h('div', { style: { marginTop: 2, fontSize: 11, color: 'var(--dsw-alias-state-warn-primary,#b45309)' } }, t('pinCustomHint')) : null,
-                ))
+            ? row(t('pinLabel'),
+              customPin?.which === 'public'
+                ? null
+                : h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: 8 } },
+                  h('span', { style: { fontFamily: 'ui-monospace,Menlo,monospace', fontSize: 13, letterSpacing: 1 } }, status.accessToken),
+                  customBtn('public')),
+              h('div', { style: { marginTop: 6 } },
+                customPin?.which === 'public' ? customPinRow('public') : null,
+                status?.publicPinCustom ? h('div', { style: { ...styles.warn } }, t('pinCustomHint')) : null,
+                namedMode ? h('div', { style: { ...styles.warn } }, t('namedSecurity')) : null))
             : null,
-          h('button', { style: styles.btn, onClick: stopTunnel }, t('stopTunnel')),
         )
-        : h('div', null,
-          h('button', { style: { ...styles.primary, margin: '8px 0' }, onClick: startTunnel, disabled: busy || tunnelStarting }, busy ? t('opening') : t('enable')),
-          tunnelStarting
-            ? h('div', { style: { marginTop: 4, fontSize: 12, color: 'var(--dsw-alias-label-secondary,#6b7280)' } },
-              tunnelPhase === 'downloading'
-                ? fmt(t, 'downloading', { s: elapsed(tunnelStateStarted) })
-                : fmt(t, 'connecting', { s: elapsed(tunnelStateStarted), suffix: elapsed(tunnelStateStarted) > 30 ? t('slowHint') : '' }))
-            : tunnelPhase === 'error'
-              ? h('div', { style: { marginTop: 4, fontSize: 12, color: 'var(--dsw-alias-state-error-primary,#dc2626)' } },
-                fmt(t, 'error', { detail: tunnelStateDetail || t('unknownError') }))
-              : null,
-        ),
+        : null,
     ),
 
-    error ? h('div', { style: { color: 'var(--dsw-alias-state-error-primary,#dc2626)', fontSize: 12, marginTop: 8 } }, `❌ ${error}`) : null,
+    error ? h('div', { style: { color: 'var(--dsw-alias-state-error-primary,#dc2626)', fontSize: 12, marginTop: 8 } }, `❌ ${errText(error)}`) : null,
+
+    // 恢复出厂设置：设置出问题时的临时兜底（最底部，避免误触）
+    h('div', { style: styles.block },
+      h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 } },
+        h('span', { style: { fontWeight: 600, fontSize: 13 } }, t('resetFactory')),
+        h('button', { style: { ...styles.btn, height: 28, padding: '0 12px', fontSize: 12, color: 'var(--dsw-alias-state-error-primary,#dc2626)' }, onClick: () => setResetOpen(true) }, t('resetGo')),
+      ),
+      h('div', { style: { ...styles.muted, marginTop: 6 } }, t('resetIntro')),
+    ),
+
+    // 恢复出厂设置确认弹框
+    resetOpen ? h('div', { style: { position: 'fixed', inset: 0, zIndex: 10000, background: 'rgba(0,0,0,.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 } },
+      h('div', { style: { background: 'var(--dsw-alias-bg-layer-1,#fff)', borderRadius: 12, maxWidth: 440, width: '100%', padding: '20px 22px', boxShadow: '0 8px 32px rgba(0,0,0,.18)' } },
+        h('div', { style: { fontWeight: 600, fontSize: 15, color: 'var(--dsw-alias-state-warn-primary,#b45309)', marginBottom: 10 } }, t('resetTitle')),
+        h('div', { style: { fontSize: 13, lineHeight: 1.7, color: 'var(--dsw-alias-label-primary,inherit)', whiteSpace: 'pre-line' } }, t('resetBody')),
+        h('div', { style: { display: 'flex', gap: 8, marginTop: 16 } },
+          h('button', { style: { ...styles.btn, flex: 1 }, onClick: () => setResetOpen(false) }, t('cancel')),
+          h('button', { style: { ...styles.primary, flex: 1, background: 'var(--dsw-alias-state-error-primary,#dc2626)' }, onClick: doFactoryReset }, t('resetConfirm')),
+        ),
+      ),
+    ) : null,
+
+    // Toast：重置等操作的即时反馈（固定屏幕正中央，2.6s 自动消失）
+    toast ? h('div', {
+      style: { position: 'fixed', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', zIndex: 10001, width: 'auto', maxWidth: 280, background: 'rgba(17,24,39,.92)', color: '#fff', border: 'none', borderRadius: 10, padding: '10px 16px', fontSize: 13, lineHeight: 1.5, textAlign: 'center', boxShadow: '0 8px 24px rgba(0,0,0,.22)' },
+    }, toast) : null,
+
+    // 局域网访问开关确认弹框（关闭/打开时弹窗提醒）
+    lanToggleOpen !== null ? h('div', { style: { position: 'fixed', inset: 0, zIndex: 10000, background: 'rgba(0,0,0,.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 } },
+      h('div', { style: { background: 'var(--dsw-alias-bg-layer-1,#fff)', borderRadius: 12, maxWidth: 420, width: '100%', padding: '20px 22px', boxShadow: '0 8px 32px rgba(0,0,0,.18)' } },
+        h('div', { style: { fontWeight: 600, fontSize: 15, color: lanToggleOpen ? 'var(--dsw-alias-brand-primary,#4f6ef7)' : 'var(--dsw-alias-state-warn-primary,#b45309)', marginBottom: 10 } }, t(lanToggleOpen ? 'lanToggleTitleOn' : 'lanToggleTitleOff')),
+        h('div', { style: { fontSize: 13, lineHeight: 1.7, color: 'var(--dsw-alias-label-primary,inherit)' } }, t(lanToggleOpen ? 'lanToggleBodyOn' : 'lanToggleBodyOff')),
+        h('div', { style: { display: 'flex', gap: 8, marginTop: 16 } },
+          h('button', { style: { ...styles.btn, flex: 1 }, onClick: () => setLanToggleOpen(null) }, t('cancel')),
+          h('button', { style: { ...styles.primary, flex: 1 }, onClick: confirmLanToggle }, t('confirm')),
+        ),
+      ),
+    ) : null,
 
     // 安全免责声明弹框（issue #31）：每次开启公网访问前确认
     disclaimerOpen ? h('div', { style: { position: 'fixed', inset: 0, zIndex: 10000, background: 'rgba(0,0,0,.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 } },
@@ -407,6 +623,421 @@ function PocketSettingsTab({ rpcCall, t }) {
   );
 }
 
+// 模型管理（LAN 全功能）：核心「模型」页的客户端按页面 hostname 判定 loopback，
+// 经 pocket 代理打开的远程页面被它判为不可用；而代理已把 RPC 通道洗成 loopback，
+// 服务端全通。这里直接用 connection.api 调配置面 RPC（契约与核心模型页一致），
+// 让手机/LAN 也能配 provider、存 API key、添加自定义 provider。
+// 安全边界：公网隧道流量在代理层被拦（lib/proxy.mjs tunnelRpcGuard）——模型管理仅限局域网。
+const LLm_NS_FILTER = (ns) => typeof ns === 'string' && ns.startsWith('llm-');
+
+/** 模型约定引用名（与核心 deriveKeyRef 一致）：provider 大写、非字母数字转下划线。 */
+function deriveKeyRef(provider) {
+  return provider.toUpperCase().replace(/[^A-Z0-9]+/g, '_') + '_API_KEY';
+}
+
+/** RpcResponse 信封解包：{ rpcId, result: { ok, value | error } } → value 或 throw。 */
+async function unwrap(promise, what) {
+  const res = await promise;
+  if (!res?.result?.ok) throw new Error(res?.result?.error?.message ?? what + ' failed');
+  return res.result.value;
+}
+
+function ModelsManagerTab({ api }) {
+  const [data, setData] = useState(null); // { providers, namespaces, writable, credentials }
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState(null); // 操作结果提示
+  const [editing, setEditing] = useState(null); // { provider, keyDraft, baseURL, models, modelsTouched, discovered, discovering }
+  const [adding, setAdding] = useState(null); // { route, displayName, baseURL, api, keyDraft, models, discovered, discovering }
+
+  const load = async () => {
+    setBusy(true); setError(null);
+    try {
+      const [directory, settingsDoc] = await Promise.all([
+        unwrap(api.llm.providers({}), 'llm.providers'),
+        unwrap(api.settings.describe({}), 'settings.describe'),
+      ]);
+      const providers = directory.providers ?? [];
+      const llmNamespaces = (settingsDoc.namespaces ?? []).filter((n) => LLm_NS_FILTER(n.ns));
+      const nsByNs = new Map(llmNamespaces.map((n) => [n.ns, n]));
+      // 收集 key 引用：目录各 provider 的 apiKeyEnv（配置里的）或约定名
+      const refs = [...new Set(providers.map((p) => {
+        const ns = nsByNs.get(p.settingsNs);
+        const profile = p.settingsPath.length === 0
+          ? ns?.value
+          : ns?.value?.providers?.[p.provider];
+        return profile?.apiKeyEnv ?? (p.settingsPath.length > 0 ? deriveKeyRef(p.provider) : null);
+      }).filter(Boolean))];
+      let credentials = {};
+      if (refs.length > 0) {
+        try {
+          const cred = await unwrap(api.credentials.describe({ refs }), 'credentials.describe');
+          credentials = cred.credentials ?? {};
+        } catch { /* key 状态是增强信息，失败不阻塞目录 */ }
+      }
+      setData({ providers, namespaces: nsByNs, writable: settingsDoc.writable !== false, credentials });
+    } catch (err) {
+      setError(err?.message ?? String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  /** 保存一个 provider 的编辑：key（若有输入）→ credentials.set；baseURL → settings.mutate。 */
+  /** 保存一个 provider 的编辑：key→credentials.set；baseURL/models→settings.mutate（ops 合并）。 */
+  const saveEdit = async () => {
+    if (!editing) return;
+    setBusy(true); setNotice(null);
+    try {
+      const entry = data.providers.find((p) => p.provider === editing.provider);
+      const ns = data.namespaces.get(entry.settingsNs);
+      const revision = ns?.revision ?? 0;
+      const base = entry.settingsPath.length === 0 ? [] : entry.settingsPath;
+      const ops = [];
+      const key = editing.keyDraft.trim();
+      if (key.length > 0) {
+        const ref = deriveKeyRef(editing.provider);
+        await unwrap(api.credentials.set({ ref, value: key }), 'credentials.set');
+        if (entry.settingsPath.length === 0 && ns?.value?.apiKeyEnv !== ref) {
+          ops.push({ op: 'set', path: ['apiKeyEnv'], value: ref });
+        }
+      }
+      if (editing.baseURL !== undefined && editing.baseURL.trim() !== '') {
+        ops.push({ op: 'set', path: [...base, 'baseURL'], value: editing.baseURL.trim() });
+      }
+      if (editing.modelsTouched) {
+        // 与核心页同语义：自定义目录 set 整个 models 数组；清空=unset 继承 adapter 默认
+        if ((editing.models ?? []).length === 0) ops.push({ op: 'unset', path: [...base, 'models'] });
+        else ops.push({ op: 'set', path: [...base, 'models'], value: editing.models.map((m) => ({ ...m })) });
+      }
+      if (ops.length > 0) {
+        await unwrap(api.settings.mutate({
+          ns: entry.settingsNs, ops, expectedRevision: revision,
+        }), 'settings.mutate');
+      }
+      setNotice('✅ 已保存 ' + editing.provider);
+      setEditing(null);
+      await load();
+    } catch (err) {
+      setNotice('❌ ' + (err?.message ?? String(err)));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** 删除自定义 provider 配置（仅 user 层有的；官方 provider 不允许删）。 */
+  const removeProvider = async (entry) => {
+    setBusy(true); setNotice(null);
+    try {
+      const ns = data.namespaces.get(entry.settingsNs);
+      if (!ns?.user || entry.settingsPath.length === 0) throw new Error('仅自定义 provider 可删除');
+      await unwrap(api.settings.mutate({
+        ns: entry.settingsNs,
+        ops: [{ op: 'unset', path: entry.settingsPath }],
+        expectedRevision: ns.revision ?? 0,
+      }), 'settings.mutate');
+      setNotice('🗑️ 已删除 ' + entry.provider);
+      await load();
+    } catch (err) {
+      setNotice('❌ ' + (err?.message ?? String(err)));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+
+  /** 创建自定义 provider（pi-ai 家族）：与核心 CustomProviderCard 同契约。 */
+  const createProvider = async () => {
+    if (!adding) return;
+    setBusy(true); setNotice(null);
+    try {
+      const route = adding.route.trim().toLowerCase();
+      if (!/^[a-z][a-z0-9-]*$/.test(route)) throw new Error('路由 ID：小写字母开头，仅小写字母/数字/连字符');
+      if ((data.providers ?? []).some((p) => p.provider === route)) throw new Error('路由 ID 已被占用：' + route);
+      const baseURL = adding.baseURL.trim();
+      if (baseURL.length === 0) throw new Error('自定义 provider 需要 API 地址');
+      const models = (adding.models ?? []).filter((m) => (m.id ?? '').trim() !== '');
+      if (models.length === 0) throw new Error('自定义 provider 至少需要一个模型（可先拉取）');
+      const key = adding.keyDraft.trim();
+      const ref = deriveKeyRef(route);
+      const ns = data.namespaces.get('llm-pi-ai');
+      const profile = {
+        ...(adding.displayName.trim().length > 0 ? { displayName: adding.displayName.trim() } : {}),
+        ...(key.length > 0 ? { apiKeyEnv: ref } : {}),
+        api: adding.api,
+        baseURL,
+        models: models.map((m) => ({ ...m })),
+      };
+      await unwrap(api.settings.mutate({
+        ns: 'llm-pi-ai',
+        ops: [{ op: 'set', path: ['providers', route], value: profile }],
+        expectedRevision: ns?.revision ?? 0,
+      }), 'settings.mutate');
+      if (key.length > 0) {
+        await unwrap(api.credentials.set({ ref, value: key }), 'credentials.set');
+      }
+      setNotice('✅ 已创建 ' + route);
+      setAdding(null);
+      await load();
+    } catch (err) {
+      setNotice('❌ ' + (err?.message ?? String(err)));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const rowOf = (entry) => {
+    const ns = data.namespaces.get(entry.settingsNs);
+    const profile = entry.settingsPath.length === 0 ? ns?.value : ns?.value?.providers?.[entry.provider];
+    const keyRef = profile?.apiKeyEnv ?? (entry.settingsPath.length > 0 ? deriveKeyRef(entry.provider) : null);
+    const cred = keyRef ? data.credentials[keyRef] : null;
+    const custom = entry.declared === true || entry.settingsPath.length > 0;
+    const open = editing?.provider === entry.provider;
+    return h('div', {
+      key: entry.provider,
+      style: { padding: '10px 0', borderTop: '1px solid var(--dsw-alias-border-l2,#e5e7eb)' },
+    },
+      h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 } },
+        h('span', {
+          title: entry.active ? '启用中 | active' : '未启用 | inactive',
+          style: { color: entry.active ? 'var(--dsw-alias-state-success-primary,#16a34a)' : 'var(--dsw-alias-label-tertiary,#8b93a1)', fontSize: 11 },
+        }, '●'),
+        h('span', { style: { fontWeight: 500 } }, entry.displayName),
+        custom ? h('span', { style: { ...styles.muted, border: '1px solid var(--dsw-alias-border-l2,#e5e7eb)', borderRadius: 999, padding: '1px 8px', fontSize: 11 } }, '自定义 | Custom') : null,
+        h('span', { style: styles.muted }, entry.provider),
+        h('span', { style: { marginLeft: 'auto', display: 'flex', gap: 6 } },
+          h('button', {
+            style: { ...styles.btn, height: 26, padding: '0 10px', fontSize: 12 },
+            onClick: () => {
+              setAdding(null);
+              if (open) { setEditing(null); return; }
+              // models 视图：user 覆盖优先，其次 base/默认（编辑从生效值起步）
+              const modelsBase = entry.settingsPath.length === 0
+                ? ns?.value?.models
+                : ns?.value?.providers?.[entry.provider]?.models;
+              const modelsCustomized = entry.settingsPath.length === 0
+                ? ns?.user && Array.isArray(ns.user.models)
+                : ns?.user?.providers?.[entry.provider]?.models !== undefined;
+              setEditing({
+                provider: entry.provider,
+                keyDraft: '',
+                baseURL: profile?.baseURL ?? '',
+                models: Array.isArray(modelsBase) ? modelsBase.map((m) => ({ ...m })) : [],
+                modelsTouched: false,
+                modelsCustomized: modelsCustomized === true,
+                discovered: null,
+                discovering: false,
+                discoverPicked: [],
+              });
+            },
+          }, open ? '收起' : '编辑'),
+          custom && data.writable ? h('button', {
+            style: { ...styles.btn, height: 26, padding: '0 10px', fontSize: 12, color: 'var(--dsw-alias-state-error-primary,#dc2626)' },
+            disabled: busy,
+            onClick: () => { void removeProvider(entry); },
+          }, '删除') : null,
+        ),
+      ),
+      h('div', { style: { ...styles.muted, marginTop: 3 } },
+        keyRef ? (cred?.configured === true ? '🔑 API 密钥已配置' : '🔑 API 密钥未配置') : '此提供方无需密钥',
+        profile?.baseURL ? ' · ' + profile.baseURL : '',
+      ),
+      open ? h('div', { style: { marginTop: 8, display: 'flex', flexDirection: 'column', gap: 8 } },
+        keyRef || entry.settingsPath.length === 0 ? h('label', { style: { fontSize: 12, display: 'flex', flexDirection: 'column', gap: 4 } },
+          'API 密钥（留空保持不变）| API key',
+          h('input', {
+            type: 'password',
+            value: editing.keyDraft,
+            placeholder: cred?.configured === true ? '已配置——输入新值可替换' : '输入 API 密钥',
+            style: styles.input,
+            onChange: (e) => setEditing({ ...editing, keyDraft: e.target.value }),
+          }),
+        ) : null,
+        h('label', { style: { fontSize: 12, display: 'flex', flexDirection: 'column', gap: 4 } },
+          'API 地址（留空保持不变）| Base URL',
+          h('input', {
+            value: editing.baseURL,
+            placeholder: 'https://api.example.com/v1',
+            style: styles.input,
+            onChange: (e) => setEditing({ ...editing, baseURL: e.target.value }),
+          }),
+        ),
+        // ---- 模型目录编辑（与核心页同语义）----
+        h('div', { style: { fontSize: 12, display: 'flex', flexDirection: 'column', gap: 6 } },
+          h('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+            h('strong', null, '模型目录 | Models'),
+            h('span', { style: styles.muted }, editing.modelsCustomized ? '（已自定义，生效中目录如上）' : '（继承提供方默认）'),
+            h('button', {
+              style: { ...styles.btn, height: 24, padding: '0 8px', fontSize: 11 },
+              disabled: editing.discovering,
+              onClick: () => {
+                setEditing({ ...editing, discovering: true });
+                const payload = { settingsNs: entry.settingsNs, provider: entry.provider };
+                const key = editing.keyDraft.trim();
+                if (key.length > 0) payload.apiKey = key;
+                const bURL = editing.baseURL.trim();
+                if (bURL.length > 0) payload.baseURL = bURL;
+                unwrap(api.llm.discoverModels(payload), 'llm.discoverModels')
+                  .then((v) => setEditing((cur) => cur && cur.provider === entry.provider ? { ...cur, discovered: v.models ?? [], discovering: false } : cur))
+                  .catch((err) => { setNotice('❌ 拉取失败：' + (err?.message ?? err)); setEditing((cur) => cur ? { ...cur, discovering: false } : cur); });
+              },
+            }, editing.discovering ? '拉取中…' : '⟳ 从提供方拉取 | Fetch'),
+          ),
+          // 当前编辑中的目录（可增删改）
+          (editing.models ?? []).map((m, i) => h('div', { key: i, style: { display: 'flex', gap: 4, alignItems: 'center' } },
+            h('input', { value: m.id, placeholder: '模型 ID', style: { ...styles.input, flex: 2 },
+              onChange: (e) => { const next = [...editing.models]; next[i] = { ...m, id: e.target.value }; setEditing({ ...editing, models: next, modelsTouched: true }); } }),
+            h('input', { value: m.name ?? '', placeholder: '显示名(可选)', style: { ...styles.input, flex: 1.2 },
+              onChange: (e) => { const next = [...editing.models]; next[i] = { ...m, name: e.target.value }; setEditing({ ...editing, models: next, modelsTouched: true }); } }),
+            h('input', { value: m.contextWindow ?? '', placeholder: '上下文', style: { ...styles.input, flex: 0.8 }, type: 'number',
+              onChange: (e) => { const next = [...editing.models]; next[i] = { ...m, contextWindow: e.target.value === '' ? undefined : Number(e.target.value) }; setEditing({ ...editing, models: next, modelsTouched: true }); } }),
+            h('button', { style: { ...styles.btn, height: 26, padding: '0 8px', fontSize: 11, color: '#dc2626' },
+              onClick: () => setEditing({ ...editing, models: editing.models.filter((_, j) => j !== i), modelsTouched: true }) }, '✕'),
+          )),
+          h('button', { style: { ...styles.btn, height: 26, padding: '0 10px', fontSize: 11 },
+            onClick: () => setEditing({ ...editing, models: [...(editing.models ?? []), { id: '' }], modelsTouched: true }) },
+            '+ 手动添加模型'),
+          editing.modelsTouched && (editing.models ?? []).length === 0
+            ? h('div', { style: styles.muted }, '目录已清空——保存后继承提供方默认目录')
+            : null,
+          // 拉取结果：勾选采纳
+          Array.isArray(editing.discovered) && editing.discovered.length > 0 ? h('div', { style: { borderTop: '1px dashed var(--dsw-alias-border-l2,#e5e7eb)', paddingTop: 6, display: 'flex', flexDirection: 'column', gap: 4 } },
+            h('div', { style: styles.muted }, '提供方可用模型（勾选采纳）：'),
+            editing.discovered.map((d) => {
+              const picked = (editing.discoverPicked ?? []).includes(d.id);
+              return h('label', { key: d.id, style: { display: 'flex', gap: 6, alignItems: 'center', fontSize: 12 } },
+                h('input', { type: 'checkbox', checked: picked,
+                  onChange: () => setEditing({ ...editing,
+                    discoverPicked: picked ? (editing.discoverPicked ?? []).filter((x) => x !== d.id) : [...(editing.discoverPicked ?? []), d.id] }) }),
+                h('span', null, d.name || d.id, d.contextWindow ? ' （' + d.contextWindow + ' ctx）' : ''),
+              );
+            }),
+            (editing.discoverPicked ?? []).length > 0 ? h('button', { style: { ...styles.btn, height: 26, padding: '0 10px', fontSize: 11 },
+              onClick: () => {
+                const pickedIds = new Set(editing.discoverPicked ?? []);
+                const existing = new Set((editing.models ?? []).map((m) => m.id));
+                const additions = (editing.discovered ?? []).filter((d) => pickedIds.has(d.id) && !existing.has(d.id))
+                  .map((d) => ({ id: d.id, ...(d.name ? { name: d.name } : {}), ...(d.contextWindow ? { contextWindow: d.contextWindow } : {}), ...(d.maxTokens ? { maxTokens: d.maxTokens } : {}) }));
+                setEditing({ ...editing, models: [...(editing.models ?? []), ...additions], modelsTouched: true, discovered: null, discoverPicked: [] });
+              } }, '采纳勾选 (' + (editing.discoverPicked ?? []).length + ')') : null,
+          ) : null,
+        ),
+        h('div', null,
+          h('button', { style: styles.primary, disabled: busy || !data.writable, onClick: () => { void saveEdit(); } },
+            busy ? '保存中…' : '保存 | Save'),
+        ),
+      ) : null,
+    );
+  };
+
+  return h('div', { style: styles.card },
+    h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 } },
+      h('strong', null, '🤖 模型管理 | Models'),
+      h('button', { style: { ...styles.btn, height: 28, padding: '0 12px', fontSize: 12 }, onClick: load, disabled: busy },
+        busy ? '加载中…' : '刷新 | Refresh'),
+    ),
+    h('div', { style: { ...styles.muted, marginTop: 4 } },
+      data && data.writable === false ? '⚠️ 当前部署设置只读，仅可查看' : '在手机上配置提供方、API 密钥与地址（仅局域网可用）'),
+
+    notice ? h('div', { style: { fontSize: 12, marginTop: 8, wordBreak: 'break-all' } }, notice) : null,
+    error ? h('div', { style: { color: 'var(--dsw-alias-state-error-primary,#dc2626)', fontSize: 12, marginTop: 10 } }, '❌ ' + error) : null,
+
+    data === null && !error ? h('div', { style: { ...styles.muted, marginTop: 10 } }, '加载中… | loading…') : null,
+    data ? h('div', { style: { marginTop: 10 } },
+      data.providers.length === 0
+        ? h('div', { style: styles.muted }, '暂无提供方')
+        : data.providers.map(rowOf),
+    ) : null,
+
+    // ---- 添加自定义 provider（与核心 CustomProviderCard 同契约）----
+    data && data.writable ? h('div', { style: { ...styles.block, marginTop: 16 } },
+      adding === null
+        ? h('button', { style: styles.btn, onClick: () => { setEditing(null); setAdding({ route: '', displayName: '', baseURL: '', api: 'openai', keyDraft: '', models: [], discovered: null, discovering: false, discoverPicked: [] }); } },
+            '＋ 添加自定义 provider | Add custom provider')
+        : h('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
+          h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between' } },
+            h('strong', null, '新建自定义 provider'),
+            h('button', { style: { ...styles.btn, height: 26, padding: '0 10px', fontSize: 12 }, onClick: () => setAdding(null) }, '取消'),
+          ),
+          h('label', { style: { fontSize: 12, display: 'flex', flexDirection: 'column', gap: 4 } }, '路由 ID（小写字母开头，唯一）',
+            h('input', { value: adding.route, placeholder: 'my-provider', style: styles.input,
+              onChange: (e) => setAdding({ ...adding, route: e.target.value }) })),
+          h('label', { style: { fontSize: 12, display: 'flex', flexDirection: 'column', gap: 4 } }, '显示名称（可选）',
+            h('input', { value: adding.displayName, placeholder: 'My Provider', style: styles.input,
+              onChange: (e) => setAdding({ ...adding, displayName: e.target.value }) })),
+          h('label', { style: { fontSize: 12, display: 'flex', flexDirection: 'column', gap: 4 } }, 'API 协议',
+            h('select', { value: adding.api, style: styles.input,
+              onChange: (e) => setAdding({ ...adding, api: e.target.value }) },
+              h('option', { value: 'openai' }, 'OpenAI 兼容'),
+              h('option', { value: 'anthropic' }, 'Anthropic 兼容'))),
+          h('label', { style: { fontSize: 12, display: 'flex', flexDirection: 'column', gap: 4 } }, 'API 地址',
+            h('input', { value: adding.baseURL, placeholder: 'https://api.example.com/v1', style: styles.input,
+              onChange: (e) => setAdding({ ...adding, baseURL: e.target.value }) })),
+          h('label', { style: { fontSize: 12, display: 'flex', flexDirection: 'column', gap: 4 } }, 'API 密钥（可留空——若该服务无需鉴权）',
+            h('input', { type: 'password', value: adding.keyDraft, style: styles.input,
+              onChange: (e) => setAdding({ ...adding, keyDraft: e.target.value }) })),
+          // 模型目录（同编辑区组件逻辑，独立状态）
+          h('div', { style: { fontSize: 12, display: 'flex', flexDirection: 'column', gap: 6 } },
+            h('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+              h('strong', null, '模型目录'),
+              h('button', {
+                style: { ...styles.btn, height: 24, padding: '0 8px', fontSize: 11 },
+                disabled: adding.discovering,
+                onClick: () => {
+                  setAdding({ ...adding, discovering: true });
+                  const payload = { settingsNs: 'llm-pi-ai', api: adding.api };
+                  const bURL = adding.baseURL.trim();
+                  if (bURL) payload.baseURL = bURL;
+                  const key = adding.keyDraft.trim();
+                  if (key) payload.apiKey = key;
+                  unwrap(api.llm.discoverModels(payload), 'llm.discoverModels')
+                    .then((v) => setAdding((cur) => cur ? { ...cur, discovered: v.models ?? [], discovering: false } : cur))
+                    .catch((err) => { setNotice('❌ 拉取失败：' + (err?.message ?? err)); setAdding((cur) => cur ? { ...cur, discovering: false } : cur); });
+                },
+              }, adding.discovering ? '拉取中…' : '⟳ 从提供方拉取 | Fetch'),
+            ),
+            (adding.models ?? []).map((m, i) => h('div', { key: i, style: { display: 'flex', gap: 4, alignItems: 'center' } },
+              h('input', { value: m.id, placeholder: '模型 ID', style: { ...styles.input, flex: 2 },
+                onChange: (e) => { const next = [...adding.models]; next[i] = { ...m, id: e.target.value }; setAdding({ ...adding, models: next }); } }),
+              h('input', { value: m.name ?? '', placeholder: '显示名(可选)', style: { ...styles.input, flex: 1.2 },
+                onChange: (e) => { const next = [...adding.models]; next[i] = { ...m, name: e.target.value }; setAdding({ ...adding, models: next }); } }),
+              h('button', { style: { ...styles.btn, height: 26, padding: '0 8px', fontSize: 11, color: '#dc2626' },
+                onClick: () => setAdding({ ...adding, models: adding.models.filter((_, j) => j !== i) }) }, '✕'),
+            )),
+            h('button', { style: { ...styles.btn, height: 26, padding: '0 10px', fontSize: 11 },
+              onClick: () => setAdding({ ...adding, models: [...(adding.models ?? []), { id: '' }] }) }, '+ 手动添加模型'),
+            Array.isArray(adding.discovered) && adding.discovered.length > 0 ? h('div', { style: { borderTop: '1px dashed var(--dsw-alias-border-l2,#e5e7eb)', paddingTop: 6, display: 'flex', flexDirection: 'column', gap: 4 } },
+              h('div', { style: styles.muted }, '提供方可用模型（勾选采纳）：'),
+              adding.discovered.map((d) => {
+                const picked = (adding.discoverPicked ?? []).includes(d.id);
+                return h('label', { key: d.id, style: { display: 'flex', gap: 6, alignItems: 'center', fontSize: 12 } },
+                  h('input', { type: 'checkbox', checked: picked,
+                    onChange: () => setAdding({ ...adding,
+                      discoverPicked: picked ? (adding.discoverPicked ?? []).filter((x) => x !== d.id) : [...(adding.discoverPicked ?? []), d.id] }) }),
+                  h('span', null, d.name || d.id, d.contextWindow ? ' （' + d.contextWindow + ' ctx）' : ''),
+                );
+              }),
+              (adding.discoverPicked ?? []).length > 0 ? h('button', { style: { ...styles.btn, height: 26, padding: '0 10px', fontSize: 11 },
+                onClick: () => {
+                  const pickedIds = new Set(adding.discoverPicked ?? []);
+                  const existing = new Set((adding.models ?? []).map((m) => m.id));
+                  const additions = (adding.discovered ?? []).filter((d) => pickedIds.has(d.id) && !existing.has(d.id))
+                    .map((d) => ({ id: d.id, ...(d.name ? { name: d.name } : {}), ...(d.contextWindow ? { contextWindow: d.contextWindow } : {}), ...(d.maxTokens ? { maxTokens: d.maxTokens } : {}) }));
+                  setAdding({ ...adding, models: [...(adding.models ?? []), ...additions], discovered: null, discoverPicked: [] });
+                } }, '采纳勾选 (' + (adding.discoverPicked ?? []).length + ')') : null,
+            ) : null,
+          ),
+          h('div', null,
+            h('button', { style: styles.primary, disabled: busy, onClick: () => { void createProvider(); } },
+              busy ? '创建中…' : '创建 | Create'),
+          ),
+        ),
+    ) : null,
+  );
+}
+
 export function apply(ctx) {
   // 移动端适配（dsh-web-mobile 移植）：抽屉布局/触控/安全区，仅窄屏生效
   mobileApply(ctx);
@@ -429,6 +1060,22 @@ export function apply(ctx) {
         inject: () => ({ rpcCall, t: translate }),
       },
       PocketSettingsTab,
+    ),
+  );
+
+  // 提供方目录：只读、任何访问方式可用（局域网/公网代理下核心「模型」页的
+  // 设置读取不可达，这里是远程唯一能看到目录的地方）
+  const api = ctx.connection.api;
+  ctx.slots.inject('settings.section', () =>
+    ctx.slots.register(
+      {
+        name: 'settings.section',
+        id: 'pocket-models',
+        order: 2,
+        label: () => '模型管理',
+        inject: () => ({ api }),
+      },
+      ModelsManagerTab,
     ),
   );
 }
