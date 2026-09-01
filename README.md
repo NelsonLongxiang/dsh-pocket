@@ -244,3 +244,9 @@ npm test                # 代理 / 认证 / 压缩 / 隧道 / 服务 / RPC / 设
 - 数据层改挂 `ctx.remote`（llm/settings/credentials 三命名空间，bundle 注入 `@deepseek-ai/dsh-api-remotes`）：`providers` 目录改用 `listConfigurableProviders()`（字段 provider/settingsNs/settingsPath 与旧消费 1:1 吻合）、`discoverModels` 适配新签名 `(settingsNs, request)`；旧宿主回落 `ctx.connection.api`，双面兼容。
 - `unwrap` 双信封兼容（新平信封 `{ok,value}` 与旧 `{rpcId,result:{ok,value}}`）——宿主或调用面任一升级都不再破坏设置页与模型页。
 
+## v2.10.0（上游同步 2）
+
+- 同步上游 v2.7.1 → **v2.10.0**：tunnel 参数重构（#78：`--no-autoupdate` 移到全局位置）、安全线净效果合入（#82/#83 会话指纹防钓鱼引入后移除）、`firstMeaningfulErrorLine` 参数错误诊断等。
+- 三项 fork 定制经自动合并全部存活并复核：scoped 包名、端口推导（`resolvePocketPort` 四级链）+ 按端口 cookie、模型管理 `ctx.remote` 数据层 + 双信封 unwrap。
+- 版本号随上游基线对齐 2.10.0。
+
