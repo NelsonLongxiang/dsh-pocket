@@ -81,5 +81,5 @@
     "access": "public",
     "registry": "http://192.168.3.88:3000/api/packages/jf-tech/npm/"
   },
-  "version": "2.9.1"
+  "version": "2.10.0"
 }

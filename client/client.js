@@ -54,7 +54,10 @@ var POCKET_ENDPOINTS = Object.freeze({
   lanSetOverride: "lan.setOverride",
   lanSetEnabled: "lan.setEnabled",
   pinSetCustom: "pin.setCustom",
-  pocketReset: "pocket.reset"
+  pocketReset: "pocket.reset",
+  // 移动端「复制文件内容」（issue #17）：手机经此 RPC 让主机读取文件正文，
+  // 再写入剪贴板——因为手机无法直接打开电脑上的文件。
+  fileRead: "pocket.fileRead"
 });
 function compareVersions(a, b) {
   const pa = String(a).replace(/^[vV]/, "").split(".");
@@ -340,6 +343,7 @@ function MobileDrawerFooter({ useSessions, downloadSessionLog, toggleSidebar, t 
 // client/mobile/fileGuard.ts
 var GUARD_MSG = "\u624B\u673A\u4E0A\u65E0\u6CD5\u76F4\u63A5\u6253\u5F00\u7535\u8111\u4E0A\u7684\u6587\u4EF6";
 var WS_LABELS = ["\u6DFB\u52A0\u5DE5\u4F5C\u533A", "\u6DFB\u52A0\u5DE5\u4F5C\u533A\u2026", "Add workspace", "Add workspace\u2026"];
+var COPY_LABEL = "\u590D\u5236";
 function looksLikeFilePath(text) {
   const t = (text ?? "").trim();
   if (t.length < 3 || t.length > 320) return false;
@@ -348,10 +352,31 @@ function looksLikeFilePath(text) {
   if (/[\w.\-]+\/[\w.\-]+\.\w{1,12}/.test(t)) return true;
   return false;
 }
-function isInsidePocket(el) {
-  return el !== null && el.closest('[data-mobile-nav="frame"]') !== null;
+async function copyText(text) {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+  }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.top = "-9999px";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    const okCopy = document.execCommand("copy");
+    ta.remove();
+    return okCopy;
+  } catch {
+    return false;
+  }
 }
-function startFileGuard() {
+function startFileGuard(readFile) {
   let toastEl = null;
   let toastTimer = null;
   const showToast = (text) => {
@@ -391,7 +416,7 @@ function startFileGuard() {
   };
   const onClick = (event) => {
     const target = event.target;
-    if (target === null || isInsidePocket(target)) return;
+    if (target === null) return;
     const el = target.closest("button, a");
     if (el === null) return;
     if (!looksLikeFilePath(el.textContent)) return;
@@ -400,6 +425,50 @@ function startFileGuard() {
     showToast(GUARD_MSG);
   };
   document.addEventListener("click", onClick, true);
+  const injectCopyButtons = () => {
+    const links = document.querySelectorAll("button, a");
+    links.forEach((el) => {
+      if (el.getAttribute("data-mobile-nav-copy") === "1") return;
+      const txt = (el.textContent ?? "").trim();
+      if (!looksLikeFilePath(txt)) return;
+      el.setAttribute("data-mobile-nav-copy", "1");
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.setAttribute("data-mobile-nav", "copy-file");
+      btn.textContent = COPY_LABEL;
+      btn.addEventListener("click", async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const filePath = (el.textContent ?? "").trim();
+        btn.disabled = true;
+        btn.textContent = "\u2026";
+        try {
+          const res = await readFile(filePath);
+          if (!res?.ok) {
+            showToast(res?.error?.message ?? "\u590D\u5236\u5931\u8D25");
+            return;
+          }
+          const content = res.value?.content ?? "";
+          const copied = await copyText(content);
+          if (copied) {
+            const kb = Math.max(1, Math.round((res.value?.size ?? content.length) / 1024));
+            showToast(`\u5DF2\u590D\u5236\u6587\u4EF6\u5185\u5BB9\uFF08${kb} KB\uFF09`);
+          } else {
+            showToast("\u590D\u5236\u5931\u8D25\uFF0C\u8BF7\u624B\u52A8\u9009\u62E9");
+          }
+        } catch (err) {
+          showToast(err instanceof Error ? err.message : "\u590D\u5236\u5931\u8D25");
+        } finally {
+          btn.disabled = false;
+          btn.textContent = COPY_LABEL;
+        }
+      });
+      el.parentElement?.insertBefore(btn, el.nextSibling);
+    });
+  };
+  injectCopyButtons();
+  const copyObserver = new MutationObserver(() => injectCopyButtons());
+  copyObserver.observe(document.body, { childList: true, subtree: true });
   const hideWsEntries = () => {
     const checkOne = (node) => {
       if (node.nodeType !== 1) return;
@@ -427,6 +496,7 @@ function startFileGuard() {
   const disconnectWs = hideWsEntries();
   return () => {
     document.removeEventListener("click", onClick, true);
+    copyObserver.disconnect();
     disconnectWs();
     if (toastTimer !== null) window.clearTimeout(toastTimer);
     toastEl?.remove();
@@ -1304,6 +1374,37 @@ var MOBILE_CSS = `
   button[aria-label="Add workspace\u2026"] {
     display: none !important;
   }
+
+  /* ---------- \u6587\u4EF6\u94FE\u63A5\u65C1\u7684\u300C\u590D\u5236\u300D\u6309\u94AE\uFF08issue #17\uFF1A\u590D\u5236\u6587\u4EF6\u5185\u5BB9\uFF09 ----------
+     \u6302\u5728\u5BF9\u8BDD\u91CC\u7684\u6587\u4EF6\u94FE\u63A5\uFF08<button>/<a>\uFF0C\u6587\u6848\u5373\u8DEF\u5F84\uFF09\u7D27\u90BB\u4F4D\u7F6E\uFF0C\u7531 fileGuard.ts
+     \u6CE8\u5165\u3002\u53EA\u5C4F\u5185\u53EF\u89C1\uFF1A\u684C\u9762\u7AEF\u4E0D\u6CE8\u5165\u3001\u4E0D\u663E\u793A\uFF1B\u8FD9\u91CC\u518D\u515C\u5E95\u4E00\u5C42\uFF0C\u907F\u514D\u4EFB\u4F55\u9057\u6F0F\u3002
+     \u6587\u4EF6\u94FE\u63A5\u591A\u4E3A inline\uFF0C\u6309\u94AE\u7528 inline-flex \u7D27\u8DDF\u5176\u540E\u5373\u53EF\u3002 */
+  [data-mobile-nav="copy-file"] {
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+    margin-left: 6px !important;
+    vertical-align: baseline !important;
+    height: 22px !important;
+    padding: 0 8px !important;
+    border: 1px solid var(--dsw-alias-border-l1, rgba(0, 0, 0, .14)) !important;
+    border-radius: 6px !important;
+    background: var(--dsw-alias-bg-layer-1, #fff) !important;
+    color: var(--dsw-alias-label-primary, inherit) !important;
+    font-family: inherit !important;
+    font-size: 11px !important;
+    line-height: 1 !important;
+    cursor: pointer !important;
+    -webkit-tap-highlight-color: transparent !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, .12) !important;
+  }
+  [data-mobile-nav="copy-file"]:active {
+    background: var(--dsw-alias-interactive-bg-hover, rgba(0, 0, 0, .06)) !important;
+  }
+  [data-mobile-nav="copy-file"][disabled] {
+    opacity: .55 !important;
+    cursor: default !important;
+  }
 }
 
 /* ---------- desktop: the mobile controls must never appear ---------- */
@@ -1538,8 +1639,28 @@ function mobileApply(ctx) {
   ctx.effect(() => {
     if (!narrow.matches) return () => {
     };
-    return startFileGuard();
-  }, "dsh-mobile-nav: file open guard + hide add-workspace (issue #17)");
+    const getWorkspaceCwd = () => {
+      try {
+        const ws = ctx.get?.("workspaces") ?? ctx.workspaces;
+        const list = ws?.list;
+        const arr = Array.isArray(list) ? list : list && typeof list === "object" && "value" in list ? list.value : null;
+        if (Array.isArray(arr)) {
+          for (const w of arr) {
+            const c = w?.cwd ?? w?.root;
+            if (typeof c === "string" && c) return c;
+          }
+        }
+      } catch {
+      }
+      return "";
+    };
+    const readFile = (filePath) => ctx.connection.rpc.call(
+      POCKET_RPC_CHANNEL,
+      POCKET_ENDPOINTS.fileRead,
+      { path: filePath, cwd: getWorkspaceCwd() }
+    );
+    return startFileGuard(readFile);
+  }, "dsh-mobile-nav: file open guard + copy button + hide add-workspace (issue #17)");
   ctx.slots.inject("conversation.session.header.actions", () => ctx.slots.register({
     name: "conversation.session.header.actions",
     id: "mobile-nav-toggle",
@@ -1639,6 +1760,7 @@ var zh2 = {
   "wanHint": "\u4EFB\u4F55\u7F51\u7EDC\u626B\u7801\u5373\u7528\uFF08URL \u6BCF\u6B21\u91CD\u542F\u81EA\u52A8\u6362\u65B0\uFF09",
   "wanPin": "\u{1F510} \u8BBF\u95EE\u5BC6\u7801\uFF1A{pin}\uFF08\u6BCF\u6B21\u5F00\u542F\u516C\u7F51\u53D8\u65B0\uFF1B\u624B\u673A\u6253\u5F00\u94FE\u63A5\u9700\u8F93\u5165\u6B64\u5BC6\u7801\uFF09",
   "wanPinCustom": "\u{1F510} \u8BBF\u95EE\u5BC6\u7801\uFF1A{pin}\uFF08\u81EA\u5B9A\u4E49\uFF0C\u5F00\u542F\u516C\u7F51\u4E0D\u518D\u81EA\u52A8\u6362\u65B0\uFF09",
+  "wanEphemeralWarn": "\u26A0\uFE0F \u516C\u7F51\u94FE\u63A5\u4EC5\u5728\u672C\u6B21\u5F00\u542F\u671F\u95F4\u6709\u6548\uFF1A\u5173\u95ED\u6216\u91CD\u542F\u540E\u5931\u6548\uFF0C\u5E76\u53EF\u80FD\u88AB\u4ED6\u4EBA\u590D\u7528\u4E3A\u964C\u751F\u7F51\u7AD9\u3002\u8BF7\u52FF\u6536\u85CF\uFF0C\u6BCF\u6B21\u4ECE\u672C\u9875\u626B\u300C\u5F53\u524D\u300D\u4E8C\u7EF4\u7801\u3002\u9700\u8981\u56FA\u5B9A\u4E0D\u53D8\u7684\u5730\u5740\u8BF7\u7528\u4E0B\u65B9\u300C\u56FA\u5B9A\u57DF\u540D\u300D\u3002",
   "stopTunnel": "\u5173\u95ED\u516C\u7F51",
   "enable": "\u5F00\u542F\u516C\u7F51\u8BBF\u95EE",
   "opening": "\u5F00\u542F\u4E2D\u2026",
@@ -1734,6 +1856,7 @@ var en2 = {
   "wanHint": "Scan from any network (the URL changes on every restart)",
   "wanPin": "\u{1F510} PIN: {pin} (changes each time the tunnel is enabled; required on the phone)",
   "wanPinCustom": "\u{1F510} PIN: {pin} (custom \u2014 not rotated on tunnel start)",
+  "wanEphemeralWarn": '\u26A0\uFE0F The public link is valid only for this session: it stops working after you close or restart, and may be reused by someone else for an unrelated site. Do not bookmark it \u2014 scan the CURRENT QR code from this page each time. For a permanent address use "Fixed domain" below.',
   "stopTunnel": "Stop",
   "enable": "Enable anywhere",
   "opening": "Enabling\u2026",
@@ -2235,6 +2358,8 @@ function PocketSettingsTab({ rpcCall, t }) {
         "div",
         null,
         qrArea(status.tunnelQr, tunnelUrl, namedMode ? t("namedRunningHint") : t("wanHint")),
+        // 防钓鱼 / 别收藏（issue #82）：公网链接仅本次有效、勿收藏提示
+        (0, import_react2.createElement)("div", { style: { marginTop: 8, fontSize: 12, lineHeight: 1.5, borderLeft: "4px solid var(--dsw-alias-state-warn-primary,#b45309)", background: "var(--dsw-alias-bg-layer-2,#f3f4f6)", borderRadius: 8, padding: "8px 10px" } }, t("wanEphemeralWarn")),
         // 地址模式行（随机/固定；固定域名选中或编辑时高亮）
         row(
           t("modeLabel"),
