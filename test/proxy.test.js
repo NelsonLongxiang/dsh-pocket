@@ -998,11 +998,14 @@ test('?token=<原始 PIN> 直达种 HttpOnly cookie，issue #35', async () => {
       });
       req.on('error', reject); req.end();
     });
-    assert.equal(r1.status, 200, '主页 200');
+    assert.equal(r1.status, 302, '?token= 直达 → 302 洗参（PR#8：凭据不留地址栏/日志/Referer）');
+    assert.ok(String(r1.setCookie ?? '').length > 0 || Array.isArray(r1.setCookie), '302 响应内联种 cookie');
     const sc = Array.isArray(r1.setCookie) ? r1.setCookie.join(';') : String(r1.setCookie ?? '');
     assert.ok(sc.includes(`dsh_pocket_token_${proxy.port}=${hashed}`), `种 cookie 含哈希值（实得：${sc.slice(0, 200)}）`);
     assert.ok(sc.includes('HttpOnly'), 'HttpOnly 标记');
     assert.ok(sc.includes('Max-Age=2592000'), '30 天持久');
+    // 洗参后 302 目标不再带 ?token=（减一个 cookie 头也无妨，上一断言已验）
+    assert.ok(!String(sc).includes('token=wrongpin'), '302 目标路径不带凭据');
 
     // 2) 用刚种的 cookie 访问子资源：200（不再依赖 ?token=）
     const r2 = await new Promise((resolve, reject) => {
