@@ -3129,11 +3129,14 @@ function apply(ctx) {
   );
   const api = ctx.remote?.llm ? {
     llm: {
-      providers: async () => ({ providers: await ctx.remote.llm.listConfigurableProviders() }),
+      providers: async () => {
+        const r = await ctx.remote.llm.listConfigurableProviders();
+        return { ok: r?.ok, error: r?.error, value: { providers: r?.value ?? [] } };
+      },
       discoverModels: async (payload) => {
         const { settingsNs, ...request } = payload ?? {};
-        const models = await ctx.remote.llm.discoverModels(settingsNs, request);
-        return { models: models ?? [] };
+        const r = await ctx.remote.llm.discoverModels(settingsNs, request);
+        return { ok: r?.ok, error: r?.error, value: { models: r?.value ?? [] } };
       }
     },
     // 新宿主 Remote 面是位置参数且 settings.describe 为 0 参（gateway client arity
