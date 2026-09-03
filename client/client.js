@@ -3136,8 +3136,24 @@ function apply(ctx) {
         return { models: models ?? [] };
       }
     },
-    settings: ctx.remote.settings,
-    credentials: ctx.remote.credentials
+    // 新宿主 Remote 面是位置参数且 settings.describe 为 0 参（gateway client arity
+    // 守卫按 descriptor.parameters 严格计数，多余实参直接抛
+    // 「client api: settings/describe expected 0 argument(s), got 1」）。
+    // 页面沿用旧宿主命名参数包契约（describe({}) / mutate({ns,ops,expectedRevision}) /
+    // credentials.describe({refs}) / credentials.set({ref,value})），在适配层拆包：
+    //   settings.describe() → @Remote describe()
+    //   settings.mutate({ns,ops,expectedRevision}) → @Remote mutate(ns, ops, expectedRevision)
+    //   credentials.describe({refs}) → @Remote describe(refs)
+    //   credentials.set({ref,value}) → @Remote set(ref, value)
+    // 旧宿主回落 ctx.connection.api，页面契约不变。
+    settings: {
+      describe: async () => ctx.remote.settings.describe(),
+      mutate: async (bag) => ctx.remote.settings.mutate(bag.ns, bag.ops, bag.expectedRevision)
+    },
+    credentials: {
+      describe: async (bag) => ctx.remote.credentials.describe(bag.refs),
+      set: async (bag) => ctx.remote.credentials.set(bag.ref, bag.value)
+    }
   } : ctx.connection?.api;
   ctx.slots.inject(
     "settings.section",
