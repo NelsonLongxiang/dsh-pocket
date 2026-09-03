@@ -1,3 +1,10 @@
+## [2.10.1](https://github.com/shaobeichen/dsh-pocket/compare/v2.10.0...v2.10.1) (2026-09-03)
+
+
+### Bug Fixes
+
+* **proxy:** 打断 Safari 局域网入口的 303 无限重定向（issue [#91](https://github.com/shaobeichen/dsh-pocket/issues/91)） ([4dd4c01](https://github.com/shaobeichen/dsh-pocket/commit/4dd4c017d5ad4b11ac003058dbda1d8d6507f079))
+
 # [2.10.0](https://github.com/shaobeichen/dsh-pocket/compare/v2.9.1...v2.10.0) (2026-08-30)
 
 
