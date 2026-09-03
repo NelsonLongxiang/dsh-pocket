@@ -355,6 +355,39 @@ export const MOBILE_CSS = `
     min-width: 0 !important;
   }
 
+  /* --- Composer popups as bottom sheets on mobile ---
+     Two composer-anchored popups break on phones (field: bottom + side
+     cut, only part of the popup visible):
+     1. the model pill menu ([role=menu], max 360px, opens upward from the
+        pill inside the composer card);
+     2. the "/" command palette (max 320px card with the search box — it
+        hosts the /model popupSelect list: search + provider-grouped rows).
+     Both are position:absolute INSIDE the conversation scrollBody
+     (overflow:hidden) and the shell center column (overflow:hidden), so
+     the scroll containers clip them mid-list. Forensics showed neither
+     layer creates a containing block (no transform/contain/will-change),
+     so on mobile we snap whichever popup is open to a viewport-anchored
+     sheet: fixed positioning escapes the scroll clip entirely, width is
+     deterministic, safe-area keeps it off the gesture bar. A transient
+     picker covering the composer is standard mobile UX; selection or an
+     outside tap still dismisses it. */
+  [data-phase] [class$="_root"]:has(> [aria-haspopup="menu"]) > [role="menu"],
+  [data-phase] [class$="_card"]:has(> [class$="_search"]) {
+    position: fixed !important;
+    left: 12px !important;
+    right: 12px !important;
+    top: auto !important;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 12px) !important;
+    width: auto !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    max-height: min(65vh, 480px) !important;
+    max-height: min(65dvh, 480px) !important;
+    z-index: 130 !important;
+    border-radius: 14px !important;
+    box-shadow: 0 -4px 28px rgba(0, 0, 0, .18) !important;
+  }
+
   /* --- Session header on mobile ---
      Layout goal: [toggle] [session title] [mode badge] in a row, with the
      Session log capsule removed from the header (relocated to the drawer
