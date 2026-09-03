@@ -2662,11 +2662,14 @@ function PocketSettingsTab({ rpcCall, t }) {
   );
 }
 function apply(ctx) {
-  if (ctx && ctx.connection) {
+  if (ctx?.connection) {
     try {
       Object.defineProperty(ctx.connection, "isLoopback", { value: true, writable: true, configurable: true });
-    } catch (e) {
-      try { ctx.connection.isLoopback = true; } catch (e2) {}
+    } catch {
+      try {
+        ctx.connection.isLoopback = true;
+      } catch {
+      }
     }
   }
   mobileApply(ctx);
