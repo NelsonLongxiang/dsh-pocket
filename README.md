@@ -249,6 +249,12 @@ npm test                # 代理 / 认证 / 压缩 / 隧道 / 服务 / RPC / 设
 
 - 同步上游 v2.7.1 → **v2.10.0**：tunnel 参数重构（#78：`--no-autoupdate` 移到全局位置）、安全线净效果合入（#82/#83 会话指纹防钓鱼引入后移除）、`firstMeaningfulErrorLine` 参数错误诊断等。
 - 三项 fork 定制经自动合并全部存活并复核：scoped 包名、端口推导（`resolvePocketPort` 四级链）+ 按端口 cookie、模型管理 `ctx.remote` 数据层 + 双信封 unwrap。
+
+## v2.10.5（上游同步 3：#90/#91 安全线与体验修复）
+
+- 同步上游 v2.10.0 → **v2.10.3**：`policyHost()`（真实源地址给伪造 Host 设下限，#90）、`?token=`/WS 限速旁路封堵（穷举不再有免计费通道）、Safari 局域网 303 死循环修复（#91）+ 握手重试上限、移动端 composer/抽屉修复（#85/#88/#89）。
+- 与 fork 定制语义合流：限速封堵接入按端口 cookie 认证路径；正确的分享链接（`?token=` 命中）现在会**清除该 IP 失败计数**（与 POST 登录成功同权），GET 仍 302 洗参、非 GET 仍写头补种。
+- 三定制 + 安全线（safeEqual/timing-safe）经 47 项认证类测试与全量 154 测试验证（3 失败均为已知 Windows 环境/平台类）。
 - 版本号随上游基线对齐 2.10.0。
 
 ## v2.10.1（收编 security-hardening）
