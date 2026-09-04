@@ -239,42 +239,104 @@ function MobileNavOverlay({ toggleSidebar, t }) {
   }, [mobile, open, toggleSidebar]);
   (0, import_react.useEffect)(() => {
     if (!mobile || !open) return;
-    const onDrawerClick = (event) => {
-      if (document.querySelector('[aria-modal="true"]') !== null) return;
-      const target = event.target;
-      if (target === null) return;
-      const drawer = document.querySelector(DRAWER_SELECTOR);
-      if (drawer === null || !drawer.contains(target)) return;
-      if (navTargetFor(target) !== null) toggleSidebar();
+    let lastTouchNavAt = 0;
+    let lastTouchX = 0;
+    let lastTouchY = 0;
+    let suppressTouchClickUntil = 0;
+    let pendingTouchRow = null;
+    let selectedRowAtArm = null;
+    let navClickArrived = false;
+    let navObserver = null;
+    let navTimer = null;
+    const drawerRoot = () => document.querySelector(DRAWER_SELECTOR);
+    const disarmNav = () => {
+      navObserver?.disconnect();
+      navObserver = null;
+      if (navTimer !== null) window.clearTimeout(navTimer);
+      navTimer = null;
+      pendingTouchRow = null;
+      selectedRowAtArm = null;
+      navClickArrived = false;
     };
-    document.addEventListener("click", onDrawerClick, true);
-    return () => document.removeEventListener("click", onDrawerClick, true);
-  }, [mobile, open, toggleSidebar]);
-  (0, import_react.useEffect)(() => {
-    if (!mobile || !open) return;
-    let timer = null;
+    const armNav = (row) => {
+      disarmNav();
+      pendingTouchRow = row;
+      const drawer = drawerRoot();
+      selectedRowAtArm = drawer?.querySelector('[role="treeitem"][aria-selected="true"]') ?? null;
+      if (drawer === null) return;
+      navObserver = new MutationObserver(() => {
+        const frame = document.querySelector('[data-mobile-nav="frame"]');
+        if (frame === null || frame.hasAttribute("data-sidebar-collapsed")) {
+          disarmNav();
+          return;
+        }
+        const selectedRow = drawerRoot()?.querySelector('[role="treeitem"][aria-selected="true"]') ?? null;
+        if (navClickArrived && selectedRow !== null && selectedRow !== selectedRowAtArm) {
+          disarmNav();
+          toggleSidebar();
+        }
+      });
+      navObserver.observe(drawer, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["aria-selected"]
+      });
+      navTimer = window.setTimeout(disarmNav, 2e3);
+    };
+    const navigationTarget = (target) => {
+      if (document.querySelector('[aria-modal="true"]') !== null) return null;
+      const frame = document.querySelector('[data-mobile-nav="frame"]');
+      if (frame === null || frame.hasAttribute("data-sidebar-collapsed")) return null;
+      if (!(target instanceof Element)) return null;
+      const drawer = drawerRoot();
+      if (drawer === null || !drawer.contains(target)) return null;
+      return navTargetFor(target);
+    };
+    const isPendingTouchClick = (event) => {
+      const capabilities = event.sourceCapabilities;
+      if (capabilities?.firesTouchEvents === true) return true;
+      return Math.hypot(event.clientX - lastTouchX, event.clientY - lastTouchY) <= 24;
+    };
+    const onDrawerClick = (event) => {
+      if (performance.now() < suppressTouchClickUntil) return;
+      if (pendingTouchRow !== null && performance.now() - lastTouchNavAt < 500 && isPendingTouchClick(event)) {
+        const target = navigationTarget(event.target);
+        const row = target?.closest('[role="treeitem"]');
+        if (row !== null && row !== void 0) {
+          pendingTouchRow = row;
+          navClickArrived = true;
+          return;
+        }
+      }
+      if (navigationTarget(event.target) !== null) toggleSidebar();
+    };
     const onDrawerPointerUp = (event) => {
       if (event.pointerType !== "touch" && event.pointerType !== "pen") return;
-      const target = event.target;
-      if (!(target instanceof Element)) return;
-      const drawer = document.querySelector(DRAWER_SELECTOR);
-      if (drawer === null || !drawer.contains(target)) return;
-      if (navTargetFor(target) === null) return;
-      if (timer !== null) return;
-      timer = window.setTimeout(() => {
-        timer = null;
-        const frame = document.querySelector('[data-mobile-nav="frame"]');
-        if (frame === null || frame.hasAttribute("data-sidebar-collapsed")) return;
-        const row = navTargetFor(target);
-        row?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
-      }, 0);
+      const target = navigationTarget(event.target);
+      if (target === null) return;
+      const row = target.closest('[role="treeitem"]');
+      if (row !== null) {
+        if (row.getAttribute("aria-selected") === "true") {
+          suppressTouchClickUntil = performance.now() + 500;
+          toggleSidebar();
+        } else {
+          lastTouchNavAt = performance.now();
+          lastTouchX = event.clientX;
+          lastTouchY = event.clientY;
+          armNav(row);
+        }
+        return;
+      }
     };
+    document.addEventListener("click", onDrawerClick, true);
     document.addEventListener("pointerup", onDrawerPointerUp, true);
     return () => {
-      if (timer !== null) window.clearTimeout(timer);
+      disarmNav();
+      document.removeEventListener("click", onDrawerClick, true);
       document.removeEventListener("pointerup", onDrawerPointerUp, true);
     };
-  }, [mobile, open]);
+  }, [mobile, open, toggleSidebar]);
   (0, import_react.useEffect)(() => {
     if (!mobile || !open) return;
     const onOutsideClick = (event) => {
@@ -283,6 +345,8 @@ function MobileNavOverlay({ toggleSidebar, t }) {
       if (target === null) return;
       if (target.closest(TOGGLE_SELECTOR) !== null) return;
       if (isOverlayTap(target)) return;
+      const frame = document.querySelector('[data-mobile-nav="frame"]');
+      if (frame === null || frame.hasAttribute("data-sidebar-collapsed")) return;
       const drawer = document.querySelector(DRAWER_SELECTOR);
       if (drawer !== null && drawer.contains(target)) return;
       toggleSidebar();
@@ -824,26 +888,77 @@ var MOBILE_CSS = `
     font-size: 15px !important;
   }
 
+  /* Keep DSH's own process disclosures and their expand/collapse behaviour,
+     but remove desktop-sized vertical breathing room between consecutive
+     context, Skill, and system-prompt entries. */
+  [data-phase] [data-turn-process] {
+    height: 28px !important;
+    padding-bottom: 4px !important;
+    margin-bottom: 4px !important;
+  }
+  [data-phase] [data-turn-process][data-open] {
+    margin-bottom: 4px !important;
+  }
+  [data-phase] [data-disclosure-row] {
+    min-height: 24px !important;
+  }
+  [data-phase] :is([data-context-injection-body], [data-system-prompt-body]) {
+    margin-top: 2px !important;
+  }
+
   /* --- Composer bottom row on mobile ---
-     The official row gives the model pill (trailing) flex:0 0 auto, which
-     squeezes the agent-permission pill (modes) down to 15px: the pill's
-     chevron then overflows on top of the model name. Let the permission
-     pill keep its natural width and let the model pill shrink instead.
-     Anchored by the composer card (:has(textarea)): row = last child,
-     tools = first child, permission pill = its 2nd child, model pill =
-     row's last child. */
-  [data-phase] [class*="_card"]:has(textarea) > :last-child {
+     Keep add, permission, model, reasoning and send controls on one line at
+     the Honor 50's 360px CSS viewport. DSH's stable data-composer-card hook
+     survives the editor's textarea -> contenteditable migration. */
+  [data-phase] [data-composer-card="true"] > [class$="_row"] {
+    flex-wrap: nowrap !important;
+    gap: 6px !important;
+  }
+  [data-phase] [data-composer-card="true"] > [class$="_row"] > :first-child {
     gap: 8px !important;
-  }
-  [data-phase] [class*="_card"]:has(textarea) > :last-child > :first-child {
-    gap: 8px !important;
-  }
-  [data-phase] [class*="_card"]:has(textarea) > :last-child > :first-child > :nth-child(2) {
-    flex: 0 0 auto !important;
-  }
-  [data-phase] [class*="_card"]:has(textarea) > :last-child > :last-child {
-    flex: 1 1 auto !important;
     min-width: 0 !important;
+  }
+  [data-phase] [data-composer-card="true"] > [class$="_row"] > :first-child > :nth-child(2) {
+    flex: 0 1 auto !important;
+    min-width: 0 !important;
+  }
+  [data-phase] [data-composer-card="true"] > [class$="_row"] > :last-child {
+    flex: 1 1 0 !important;
+    min-width: 0 !important;
+    gap: 6px !important;
+  }
+
+  /* --- Composer popups as bottom sheets on mobile ---
+     Two composer-anchored popups break on phones (field: bottom + side
+     cut, only part of the popup visible):
+     1. the model pill menu ([role=menu], max 360px, opens upward from the
+        pill inside the composer card);
+     2. the "/" command palette (max 320px card with the search box \u2014 it
+        hosts the /model popupSelect list: search + provider-grouped rows).
+     Both are position:absolute INSIDE the conversation scrollBody
+     (overflow:hidden) and the shell center column (overflow:hidden), so
+     the scroll containers clip them mid-list. Forensics showed neither
+     layer creates a containing block (no transform/contain/will-change),
+     so on mobile we snap whichever popup is open to a viewport-anchored
+     sheet: fixed positioning escapes the scroll clip entirely, width is
+     deterministic, safe-area keeps it off the gesture bar. A transient
+     picker covering the composer is standard mobile UX; selection or an
+     outside tap still dismisses it. */
+  [data-phase] [class$="_root"]:has(> [aria-haspopup="menu"]) > [role="menu"],
+  [data-phase] [class$="_card"]:has(> [class$="_search"]) {
+    position: fixed !important;
+    left: 12px !important;
+    right: 12px !important;
+    top: auto !important;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 12px) !important;
+    width: auto !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    max-height: min(65vh, 480px) !important;
+    max-height: min(65dvh, 480px) !important;
+    z-index: 130 !important;
+    border-radius: 14px !important;
+    box-shadow: 0 -4px 28px rgba(0, 0, 0, .18) !important;
   }
 
   /* --- Session header on mobile ---
@@ -854,14 +969,22 @@ var MOBILE_CSS = `
        header > :first-child                   titleRow (titleCluster + utilities)
        header > :first-child > :last-child     headerUtilities (Session log seat) */
   [data-phase] header {
-    padding-right: 12px !important;
+    padding: 8px 12px 0 !important;
   }
-  /* Give the title row a lane clear of the absolutely-placed toggle, then
-     balance the header: with header padding-right 12px, a 20px left
-     padding puts the title's geometric center exactly on the viewport
-     center (measured 195/195 at 390px). */
+  /* The directory and Files controls are absolutely positioned, so reserve
+     their lanes and let the title use the remaining width without squeezing. */
   [data-phase] header > :first-child {
-    padding-left: 20px !important;
+    min-height: 36px !important;
+    padding: 0 32px !important;
+  }
+  [data-phase] header [class$="_titleCluster"],
+  [data-phase] header [class$="_crumbs"] {
+    min-width: 0 !important;
+  }
+  [data-phase] header button[class*="_crumb"] {
+    max-width: calc(100vw - 104px) !important;
+    padding-left: 0 !important;
+    padding-right: 0 !important;
   }
   /* The directory toggle sits at the far left of the header (the header
      is position:relative; the data-slot wrappers are display:contents). */
@@ -1588,11 +1711,10 @@ function mobileApply(ctx) {
       }
     };
     const mark = () => {
-      for (const root of document.querySelectorAll('[data-phase] [class$="_root"]')) {
-        if (root.closest('[class$="_composerStack"]') === null) continue;
+      const selector = '[data-phase] [data-slot="conversation.composer.dock"] [class$="_root"]';
+      for (const root of document.querySelectorAll(selector)) {
         const text = root.textContent ?? "";
         if (!/(turns|steps|\bLLM\b|轮|步)/.test(text)) continue;
-        if (root.querySelector("textarea") !== null) continue;
         root.setAttribute("data-mobile-nav", "stats");
         moveTps(root);
         return;
@@ -3110,6 +3232,16 @@ function ModelsManagerTab({ api }) {
   );
 }
 function apply(ctx) {
+  if (ctx?.connection) {
+    try {
+      Object.defineProperty(ctx.connection, "isLoopback", { value: true, writable: true, configurable: true });
+    } catch {
+      try {
+        ctx.connection.isLoopback = true;
+      } catch {
+      }
+    }
+  }
   mobileApply(ctx);
   const rpcCall = (endpoint, payload, signal) => ctx.connection.rpc.call(POCKET_RPC_CHANNEL, endpoint, payload, signal);
   const translate = ctx.locale.bind(NS2);
