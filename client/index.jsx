@@ -14,7 +14,7 @@ import { mobileApply } from './mobile/mobile-apply.tsx';
 import { NS as POCKET_NS, zh as POCKET_ZH, en as POCKET_EN } from './pocket-locales.js';
 
 const name = 'dsh-pocket';
-const inject = ['slots', 'connection', 'remote', 'layout', 'locale', 'sessionLogDownload'];
+const inject = ['slots', 'connection', 'remote', 'remote.llm', 'remote.settings', 'remote.credentials', 'layout', 'locale', 'sessionLogDownload'];
 
 // 词典在 pocket-locales.js；这里只做「取 key → 替换 {占位符} → 字符串」。
 // 不依赖 DSH t() 的插值能力，避免行为不一致。
@@ -1077,15 +1077,34 @@ export function apply(ctx) {
   // 旧宿主回落 ctx.connection.api。unwrap 双信封兼容两条调用面。
   const api = ctx.remote?.llm ? {
     llm: {
-      providers: async () => ({ providers: await ctx.remote.llm.listConfigurableProviders() }),
+      providers: async () => {
+        const r = await ctx.remote.llm.listConfigurableProviders();
+        return { ok: r?.ok, error: r?.error, value: { providers: r?.value ?? [] } };
+      },
       discoverModels: async (payload) => {
         const { settingsNs, ...request } = payload ?? {};
-        const models = await ctx.remote.llm.discoverModels(settingsNs, request);
-        return { models: models ?? [] };
+        const r = await ctx.remote.llm.discoverModels(settingsNs, request);
+        return { ok: r?.ok, error: r?.error, value: { models: r?.value ?? [] } };
       },
     },
-    settings: ctx.remote.settings,
-    credentials: ctx.remote.credentials,
+    // 新宿主 Remote 面是位置参数且 settings.describe 为 0 参（gateway client arity
+    // 守卫按 descriptor.parameters 严格计数，多余实参直接抛
+    // 「client api: settings/describe expected 0 argument(s), got 1」）。
+    // 页面沿用旧宿主命名参数包契约（describe({}) / mutate({ns,ops,expectedRevision}) /
+    // credentials.describe({refs}) / credentials.set({ref,value})），在适配层拆包：
+    //   settings.describe() → @Remote describe()
+    //   settings.mutate({ns,ops,expectedRevision}) → @Remote mutate(ns, ops, expectedRevision)
+    //   credentials.describe({refs}) → @Remote describe(refs)
+    //   credentials.set({ref,value}) → @Remote set(ref, value)
+    // 旧宿主回落 ctx.connection.api，页面契约不变。
+    settings: {
+      describe: async () => ctx.remote.settings.describe(),
+      mutate: async (bag) => ctx.remote.settings.mutate(bag.ns, bag.ops, bag.expectedRevision),
+    },
+    credentials: {
+      describe: async (bag) => ctx.remote.credentials.describe(bag.refs),
+      set: async (bag) => ctx.remote.credentials.set(bag.ref, bag.value),
+    },
   } : ctx.connection?.api;
   ctx.slots.inject('settings.section', () =>
     ctx.slots.register(

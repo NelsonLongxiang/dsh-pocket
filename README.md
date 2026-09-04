@@ -250,3 +250,6 @@ npm test                # 代理 / 认证 / 压缩 / 隧道 / 服务 / RPC / 设
 - 三项 fork 定制经自动合并全部存活并复核：scoped 包名、端口推导（`resolvePocketPort` 四级链）+ 按端口 cookie、模型管理 `ctx.remote` 数据层 + 双信封 unwrap。
 - 版本号随上游基线对齐 2.10.0。
 
+## v2.10.1（收编 security-hardening）
+
+- 合并 PR #8（timing-safe token/PIN 比较、writeSettings 可见告警、`?token=` 302 洗参）到新基线：safeEqual 进入多 token authCheck，302 洗参与按端口 cookie/推导端口协同。
