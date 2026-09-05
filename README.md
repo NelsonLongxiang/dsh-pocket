@@ -119,6 +119,7 @@ npx @deepseek-ai/dsh web
 - **公网判定是 fail closed**（issue #66）：除本机（loopback）和局域网私网地址外，**一切陌生域名（包括你自建隧道/反向代理指向本机端口的固定域名）一律按公网处理、强制公网密码**——不存在「换域名绕过密码」的口子
 - 局域网模式不暴露公网，只有同一网络内的设备能访问
 - 适合个人自用；公网密码存本机 `$DSH_HOME/dsh-pocket/token`（默认每次开启公网自动换新，**自定义后不换**），局域网密码存 `$DSH_HOME/dsh-pocket/token-lan`（设置页手动刷新），开关/自定义标记存 `$DSH_HOME/dsh-pocket/settings.json`
+- **CLI 模式（命令行直跑 `dsh-pocket`）也有密码**（issue #90 修复前这条路是无认证的）：默认随机生成 8 位密码，打印在终端、并已内嵌进二维码（**扫码体验不变**），手动敲地址时需要填写，本机访问免密。`--pin <值>` 或 `DSH_POCKET_PIN=<值>` 自定义（至少 6 位）；`--no-auth` 可关闭，**不推荐**——那等于把能执行代码的 DSH 裸暴露给任何能连上该端口的人
 
 ## 💻 DSH Desktop（桌面版）
 
@@ -248,8 +249,20 @@ npm test                # 代理 / 认证 / 压缩 / 隧道 / 服务 / RPC / 设
 
 - 同步上游 v2.7.1 → **v2.10.0**：tunnel 参数重构（#78：`--no-autoupdate` 移到全局位置）、安全线净效果合入（#82/#83 会话指纹防钓鱼引入后移除）、`firstMeaningfulErrorLine` 参数错误诊断等。
 - 三项 fork 定制经自动合并全部存活并复核：scoped 包名、端口推导（`resolvePocketPort` 四级链）+ 按端口 cookie、模型管理 `ctx.remote` 数据层 + 双信封 unwrap。
+
+## v2.10.5（上游同步 3：#90/#91 安全线与体验修复）
+
+- 同步上游 v2.10.0 → **v2.10.3**：`policyHost()`（真实源地址给伪造 Host 设下限，#90）、`?token=`/WS 限速旁路封堵（穷举不再有免计费通道）、Safari 局域网 303 死循环修复（#91）+ 握手重试上限、移动端 composer/抽屉修复（#85/#88/#89）。
+- 与 fork 定制语义合流：限速封堵接入按端口 cookie 认证路径；正确的分享链接（`?token=` 命中）现在会**清除该 IP 失败计数**（与 POST 登录成功同权），GET 仍 302 洗参、非 GET 仍写头补种。
+- 三定制 + 安全线（safeEqual/timing-safe）经 47 项认证类测试与全量 154 测试验证（3 失败均为已知 Windows 环境/平台类）。
 - 版本号随上游基线对齐 2.10.0。
 
 ## v2.10.1（收编 security-hardening）
 
 - 合并 PR #8（timing-safe token/PIN 比较、writeSettings 可见告警、`?token=` 302 洗参）到新基线：safeEqual 进入多 token authCheck，302 洗参与按端口 cookie/推导端口协同。
+
+## v2.11.0（移除模型管理功能）
+
+- 应产品决策移除手机端「模型管理 | Models」页签整块功能（源自 provider-directory 六提交线）：删除 ModelsManagerTab、pocket-models slot、ctx.remote 适配层与 `@deepseek-ai/dsh-api-remotes` 注入（-1081 行）。
+- 保留沉淀：2.9.1 的「ctx.remote 迁移 + 双信封 unwrap」修复模式与「宿主升级抽走插件地板」教训在案（unwrap 保留，设置页继续受益）；per-port cookie 与端口推导不受影响。
+- 手机端模型配置回归桌面端核心设置页（核心能力，不经 pocket 代理面暴露）。
