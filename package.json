@@ -60,7 +60,6 @@
     "client": {
       "inject": [
         "@deepseek-ai/dsh-client-connection",
-        "@deepseek-ai/dsh-api-remotes",
         "@deepseek-ai/dsh-client-ui-slots",
         "@deepseek-ai/dsh-client-ui-layout",
         "@deepseek-ai/dsh-client-locale",
@@ -81,5 +80,5 @@
     "access": "public",
     "registry": "http://192.168.3.88:3000/api/packages/jf-tech/npm/"
   },
-  "version": "2.10.5"
+  "version": "2.11.0"
 }

@@ -260,3 +260,9 @@ npm test                # 代理 / 认证 / 压缩 / 隧道 / 服务 / RPC / 设
 ## v2.10.1（收编 security-hardening）
 
 - 合并 PR #8（timing-safe token/PIN 比较、writeSettings 可见告警、`?token=` 302 洗参）到新基线：safeEqual 进入多 token authCheck，302 洗参与按端口 cookie/推导端口协同。
+
+## v2.11.0（移除模型管理功能）
+
+- 应产品决策移除手机端「模型管理 | Models」页签整块功能（源自 provider-directory 六提交线）：删除 ModelsManagerTab、pocket-models slot、ctx.remote 适配层与 `@deepseek-ai/dsh-api-remotes` 注入（-1081 行）。
+- 保留沉淀：2.9.1 的「ctx.remote 迁移 + 双信封 unwrap」修复模式与「宿主升级抽走插件地板」教训在案（unwrap 保留，设置页继续受益）；per-port cookie 与端口推导不受影响。
+- 手机端模型配置回归桌面端核心设置页（核心能力，不经 pocket 代理面暴露）。
