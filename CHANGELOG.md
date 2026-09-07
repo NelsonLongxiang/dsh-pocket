@@ -1,3 +1,28 @@
+## [2.10.3](https://github.com/shaobeichen/dsh-pocket/compare/v2.10.2...v2.10.3) (2026-09-03)
+
+
+### Bug Fixes
+
+* **security:** CLI 模式默认开启访问密码，堵住 0.0.0.0 上的无认证访问（issue [#90](https://github.com/shaobeichen/dsh-pocket/issues/90) [#8](https://github.com/shaobeichen/dsh-pocket/issues/8)） ([5d3a6d0](https://github.com/shaobeichen/dsh-pocket/commit/5d3a6d03e4e1c4fe84626fd3dfd7a4fec28641cc))
+
+## [2.10.2](https://github.com/shaobeichen/dsh-pocket/compare/v2.10.1...v2.10.2) (2026-09-03)
+
+
+### Bug Fixes
+
+* **mobile:** restore compact usable composer ([#89](https://github.com/shaobeichen/dsh-pocket/issues/89)) ([#93](https://github.com/shaobeichen/dsh-pocket/issues/93)) ([5c56d24](https://github.com/shaobeichen/dsh-pocket/commit/5c56d24c2953022c4300973627dae4d3aebcfbb2))
+* **mobile:** snap composer popups to viewport sheet; scroll containers clipped them half-visible on phones ([#88](https://github.com/shaobeichen/dsh-pocket/issues/88)) ([7209de8](https://github.com/shaobeichen/dsh-pocket/commit/7209de8540cf324dd578b18f10bec6b1ff8ea3c4))
+* **mobile:** 触摸切换会话等宿主完成导航后再关抽屉 ([#85](https://github.com/shaobeichen/dsh-pocket/issues/85)) ([80b9d16](https://github.com/shaobeichen/dsh-pocket/commit/80b9d16369e3e33457afe8d9c1a48dfa42dc4397)), closes [#84](https://github.com/shaobeichen/dsh-pocket/issues/84)
+* **proxy:** loopback trust patch so remote browsers can load settings (issue [#58](https://github.com/shaobeichen/dsh-pocket/issues/58)) ([#87](https://github.com/shaobeichen/dsh-pocket/issues/87)) ([1d67152](https://github.com/shaobeichen/dsh-pocket/commit/1d67152a8a1808d36743162ff24abe3a061cedcd))
+* **security:** 堵住 ?token=/WS 的限速旁路，PIN 改 CSPRNG，Host 头伪造按源地址收紧（issue [#90](https://github.com/shaobeichen/dsh-pocket/issues/90)） ([0bfe15a](https://github.com/shaobeichen/dsh-pocket/commit/0bfe15a56c2063e14f1eea5de2ef0cd4e1e54b0d))
+
+## [2.10.1](https://github.com/shaobeichen/dsh-pocket/compare/v2.10.0...v2.10.1) (2026-09-03)
+
+
+### Bug Fixes
+
+* **proxy:** 打断 Safari 局域网入口的 303 无限重定向（issue [#91](https://github.com/shaobeichen/dsh-pocket/issues/91)） ([4dd4c01](https://github.com/shaobeichen/dsh-pocket/commit/4dd4c017d5ad4b11ac003058dbda1d8d6507f079))
+
 # [2.10.0](https://github.com/shaobeichen/dsh-pocket/compare/v2.9.1...v2.10.0) (2026-08-30)
 
 
