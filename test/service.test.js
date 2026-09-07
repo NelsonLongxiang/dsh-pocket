@@ -603,8 +603,11 @@ test('桌面端（desktop=true）：update/restart 关闭，status 带标志，�
   await service.dispose();
 });
 
-test('startProxy：端口被占（EADDRINUSE）时自动尝试下一个端口', async () => {
+test('startProxy：端口被占（EADDRINUSE）时自动尝试下一个端口，回退高声留痕', async () => {
   let attempts = 0;
+  const logs = [];
+  const originalLog = console.log;
+  console.log = (...args) => { logs.push(args.join(' ')); };
   const internals = {
     ...stubInternals(),
     createProxy: async ({ port: p }) => {
@@ -617,13 +620,37 @@ test('startProxy：端口被占（EADDRINUSE）时自动尝试下一个端口', 
       return { port: p, close: async () => {} };
     },
   };
+  try {
+    const service = createPocketService({ dshPort: 3080, port: 3081, internals });
+    const proxy = await service.startProxy();
+    assert.equal(attempts, 2, '第一个端口失败后重试');
+    assert.equal(proxy.port, 3082, '自动换到下一个端口');
+    // 回退日志显著行（规格：回退必须可见——2026-09-04 .157 端口漂移教训）
+    assert.ok(
+      logs.some(line => line.includes('port 3081 busy') && line.includes('3082')),
+      '回退发生时输出含 from/to 的显著日志行',
+    );
+    const st = await service.status();
+    assert.equal(st.proxyRunning, true);
+    assert.ok(st.lanUrl.includes(':3082'), 'URL 使用实际端口');
+    // 回退事实进 state 面：status() 必须能分辨「设置值」与「回退值」
+    assert.deepEqual(st.proxyPortFallback, { from: 3081, to: 3082 }, '回退事实暴露给 status 消费者');
+    await service.dispose();
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+test('startProxy：端口未被占时不产生回退事实（status 口 proxyPortFallback=null）', async () => {
+  const internals = {
+    ...stubInternals(),
+    createProxy: async ({ port: p }) => ({ port: p, close: async () => {} }),
+  };
   const service = createPocketService({ dshPort: 3080, port: 3081, internals });
-  const proxy = await service.startProxy();
-  assert.equal(attempts, 2, '第一个端口失败后重试');
-  assert.equal(proxy.port, 3082, '自动换到下一个端口');
+  await service.startProxy();
   const st = await service.status();
-  assert.equal(st.proxyRunning, true);
-  assert.ok(st.lanUrl.includes(':3082'), 'URL 使用实际端口');
+  assert.equal(st.proxyPort, 3081);
+  assert.equal(st.proxyPortFallback, null, '无回退时 fallback 为 null（端口即设置值）');
   await service.dispose();
 });
 
