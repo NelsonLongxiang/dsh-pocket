@@ -1,3 +1,10 @@
+# [2.11.1](https://gitea.local/shaobeichen/dsh-pocket/compare/v2.11.0...v2.11.1) (2026-09-12)
+
+
+### Bug Fixes
+
+* **compat:** 0.1.5 宿主的 connection.rpc.handle 内部读取 webServer 注入，pocket 挂载改为经 ctx.inject(['connection','webServer']) 取得双声明作用域（上游 gateway 同款形态），并对无 inject 的最小 ctx 保持直调降级
+
 # [2.10.0](https://github.com/shaobeichen/dsh-pocket/compare/v2.9.1...v2.10.0) (2026-08-30)
 
 
