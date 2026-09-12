@@ -1,3 +1,9 @@
+# [2.11.2](https://gitea.local/shaobeichen/dsh-pocket/compare/v2.11.1...v2.11.2) (2026-09-12)
+
+
+### Bug Fixes
+
+* **release:** 对齐双分叉线——模型管理页签移除（PR #14 产品决策）随 origin/main 回到发布线，保留 0.1.5 宿主 compat fix（PR #15）；上游 2.10.3 安全/移动端修复一并生效
 # [2.11.1](https://gitea.local/shaobeichen/dsh-pocket/compare/v2.11.0...v2.11.1) (2026-09-12)
 
 
