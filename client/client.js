@@ -239,42 +239,104 @@ function MobileNavOverlay({ toggleSidebar, t }) {
   }, [mobile, open, toggleSidebar]);
   (0, import_react.useEffect)(() => {
     if (!mobile || !open) return;
-    const onDrawerClick = (event) => {
-      if (document.querySelector('[aria-modal="true"]') !== null) return;
-      const target = event.target;
-      if (target === null) return;
-      const drawer = document.querySelector(DRAWER_SELECTOR);
-      if (drawer === null || !drawer.contains(target)) return;
-      if (navTargetFor(target) !== null) toggleSidebar();
+    let lastTouchNavAt = 0;
+    let lastTouchX = 0;
+    let lastTouchY = 0;
+    let suppressTouchClickUntil = 0;
+    let pendingTouchRow = null;
+    let selectedRowAtArm = null;
+    let navClickArrived = false;
+    let navObserver = null;
+    let navTimer = null;
+    const drawerRoot = () => document.querySelector(DRAWER_SELECTOR);
+    const disarmNav = () => {
+      navObserver?.disconnect();
+      navObserver = null;
+      if (navTimer !== null) window.clearTimeout(navTimer);
+      navTimer = null;
+      pendingTouchRow = null;
+      selectedRowAtArm = null;
+      navClickArrived = false;
     };
-    document.addEventListener("click", onDrawerClick, true);
-    return () => document.removeEventListener("click", onDrawerClick, true);
-  }, [mobile, open, toggleSidebar]);
-  (0, import_react.useEffect)(() => {
-    if (!mobile || !open) return;
-    let timer = null;
+    const armNav = (row) => {
+      disarmNav();
+      pendingTouchRow = row;
+      const drawer = drawerRoot();
+      selectedRowAtArm = drawer?.querySelector('[role="treeitem"][aria-selected="true"]') ?? null;
+      if (drawer === null) return;
+      navObserver = new MutationObserver(() => {
+        const frame = document.querySelector('[data-mobile-nav="frame"]');
+        if (frame === null || frame.hasAttribute("data-sidebar-collapsed")) {
+          disarmNav();
+          return;
+        }
+        const selectedRow = drawerRoot()?.querySelector('[role="treeitem"][aria-selected="true"]') ?? null;
+        if (navClickArrived && selectedRow !== null && selectedRow !== selectedRowAtArm) {
+          disarmNav();
+          toggleSidebar();
+        }
+      });
+      navObserver.observe(drawer, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["aria-selected"]
+      });
+      navTimer = window.setTimeout(disarmNav, 2e3);
+    };
+    const navigationTarget = (target) => {
+      if (document.querySelector('[aria-modal="true"]') !== null) return null;
+      const frame = document.querySelector('[data-mobile-nav="frame"]');
+      if (frame === null || frame.hasAttribute("data-sidebar-collapsed")) return null;
+      if (!(target instanceof Element)) return null;
+      const drawer = drawerRoot();
+      if (drawer === null || !drawer.contains(target)) return null;
+      return navTargetFor(target);
+    };
+    const isPendingTouchClick = (event) => {
+      const capabilities = event.sourceCapabilities;
+      if (capabilities?.firesTouchEvents === true) return true;
+      return Math.hypot(event.clientX - lastTouchX, event.clientY - lastTouchY) <= 24;
+    };
+    const onDrawerClick = (event) => {
+      if (performance.now() < suppressTouchClickUntil) return;
+      if (pendingTouchRow !== null && performance.now() - lastTouchNavAt < 500 && isPendingTouchClick(event)) {
+        const target = navigationTarget(event.target);
+        const row = target?.closest('[role="treeitem"]');
+        if (row !== null && row !== void 0) {
+          pendingTouchRow = row;
+          navClickArrived = true;
+          return;
+        }
+      }
+      if (navigationTarget(event.target) !== null) toggleSidebar();
+    };
     const onDrawerPointerUp = (event) => {
       if (event.pointerType !== "touch" && event.pointerType !== "pen") return;
-      const target = event.target;
-      if (!(target instanceof Element)) return;
-      const drawer = document.querySelector(DRAWER_SELECTOR);
-      if (drawer === null || !drawer.contains(target)) return;
-      if (navTargetFor(target) === null) return;
-      if (timer !== null) return;
-      timer = window.setTimeout(() => {
-        timer = null;
-        const frame = document.querySelector('[data-mobile-nav="frame"]');
-        if (frame === null || frame.hasAttribute("data-sidebar-collapsed")) return;
-        const row = navTargetFor(target);
-        row?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
-      }, 0);
+      const target = navigationTarget(event.target);
+      if (target === null) return;
+      const row = target.closest('[role="treeitem"]');
+      if (row !== null) {
+        if (row.getAttribute("aria-selected") === "true") {
+          suppressTouchClickUntil = performance.now() + 500;
+          toggleSidebar();
+        } else {
+          lastTouchNavAt = performance.now();
+          lastTouchX = event.clientX;
+          lastTouchY = event.clientY;
+          armNav(row);
+        }
+        return;
+      }
     };
+    document.addEventListener("click", onDrawerClick, true);
     document.addEventListener("pointerup", onDrawerPointerUp, true);
     return () => {
-      if (timer !== null) window.clearTimeout(timer);
+      disarmNav();
+      document.removeEventListener("click", onDrawerClick, true);
       document.removeEventListener("pointerup", onDrawerPointerUp, true);
     };
-  }, [mobile, open]);
+  }, [mobile, open, toggleSidebar]);
   (0, import_react.useEffect)(() => {
     if (!mobile || !open) return;
     const onOutsideClick = (event) => {
@@ -283,6 +345,8 @@ function MobileNavOverlay({ toggleSidebar, t }) {
       if (target === null) return;
       if (target.closest(TOGGLE_SELECTOR) !== null) return;
       if (isOverlayTap(target)) return;
+      const frame = document.querySelector('[data-mobile-nav="frame"]');
+      if (frame === null || frame.hasAttribute("data-sidebar-collapsed")) return;
       const drawer = document.querySelector(DRAWER_SELECTOR);
       if (drawer !== null && drawer.contains(target)) return;
       toggleSidebar();
@@ -824,26 +888,77 @@ var MOBILE_CSS = `
     font-size: 15px !important;
   }
 
+  /* Keep DSH's own process disclosures and their expand/collapse behaviour,
+     but remove desktop-sized vertical breathing room between consecutive
+     context, Skill, and system-prompt entries. */
+  [data-phase] [data-turn-process] {
+    height: 28px !important;
+    padding-bottom: 4px !important;
+    margin-bottom: 4px !important;
+  }
+  [data-phase] [data-turn-process][data-open] {
+    margin-bottom: 4px !important;
+  }
+  [data-phase] [data-disclosure-row] {
+    min-height: 24px !important;
+  }
+  [data-phase] :is([data-context-injection-body], [data-system-prompt-body]) {
+    margin-top: 2px !important;
+  }
+
   /* --- Composer bottom row on mobile ---
-     The official row gives the model pill (trailing) flex:0 0 auto, which
-     squeezes the agent-permission pill (modes) down to 15px: the pill's
-     chevron then overflows on top of the model name. Let the permission
-     pill keep its natural width and let the model pill shrink instead.
-     Anchored by the composer card (:has(textarea)): row = last child,
-     tools = first child, permission pill = its 2nd child, model pill =
-     row's last child. */
-  [data-phase] [class*="_card"]:has(textarea) > :last-child {
+     Keep add, permission, model, reasoning and send controls on one line at
+     the Honor 50's 360px CSS viewport. DSH's stable data-composer-card hook
+     survives the editor's textarea -> contenteditable migration. */
+  [data-phase] [data-composer-card="true"] > [class$="_row"] {
+    flex-wrap: nowrap !important;
+    gap: 6px !important;
+  }
+  [data-phase] [data-composer-card="true"] > [class$="_row"] > :first-child {
     gap: 8px !important;
-  }
-  [data-phase] [class*="_card"]:has(textarea) > :last-child > :first-child {
-    gap: 8px !important;
-  }
-  [data-phase] [class*="_card"]:has(textarea) > :last-child > :first-child > :nth-child(2) {
-    flex: 0 0 auto !important;
-  }
-  [data-phase] [class*="_card"]:has(textarea) > :last-child > :last-child {
-    flex: 1 1 auto !important;
     min-width: 0 !important;
+  }
+  [data-phase] [data-composer-card="true"] > [class$="_row"] > :first-child > :nth-child(2) {
+    flex: 0 1 auto !important;
+    min-width: 0 !important;
+  }
+  [data-phase] [data-composer-card="true"] > [class$="_row"] > :last-child {
+    flex: 1 1 0 !important;
+    min-width: 0 !important;
+    gap: 6px !important;
+  }
+
+  /* --- Composer popups as bottom sheets on mobile ---
+     Two composer-anchored popups break on phones (field: bottom + side
+     cut, only part of the popup visible):
+     1. the model pill menu ([role=menu], max 360px, opens upward from the
+        pill inside the composer card);
+     2. the "/" command palette (max 320px card with the search box \u2014 it
+        hosts the /model popupSelect list: search + provider-grouped rows).
+     Both are position:absolute INSIDE the conversation scrollBody
+     (overflow:hidden) and the shell center column (overflow:hidden), so
+     the scroll containers clip them mid-list. Forensics showed neither
+     layer creates a containing block (no transform/contain/will-change),
+     so on mobile we snap whichever popup is open to a viewport-anchored
+     sheet: fixed positioning escapes the scroll clip entirely, width is
+     deterministic, safe-area keeps it off the gesture bar. A transient
+     picker covering the composer is standard mobile UX; selection or an
+     outside tap still dismisses it. */
+  [data-phase] [class$="_root"]:has(> [aria-haspopup="menu"]) > [role="menu"],
+  [data-phase] [class$="_card"]:has(> [class$="_search"]) {
+    position: fixed !important;
+    left: 12px !important;
+    right: 12px !important;
+    top: auto !important;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 12px) !important;
+    width: auto !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    max-height: min(65vh, 480px) !important;
+    max-height: min(65dvh, 480px) !important;
+    z-index: 130 !important;
+    border-radius: 14px !important;
+    box-shadow: 0 -4px 28px rgba(0, 0, 0, .18) !important;
   }
 
   /* --- Session header on mobile ---
@@ -854,14 +969,22 @@ var MOBILE_CSS = `
        header > :first-child                   titleRow (titleCluster + utilities)
        header > :first-child > :last-child     headerUtilities (Session log seat) */
   [data-phase] header {
-    padding-right: 12px !important;
+    padding: 8px 12px 0 !important;
   }
-  /* Give the title row a lane clear of the absolutely-placed toggle, then
-     balance the header: with header padding-right 12px, a 20px left
-     padding puts the title's geometric center exactly on the viewport
-     center (measured 195/195 at 390px). */
+  /* The directory and Files controls are absolutely positioned, so reserve
+     their lanes and let the title use the remaining width without squeezing. */
   [data-phase] header > :first-child {
-    padding-left: 20px !important;
+    min-height: 36px !important;
+    padding: 0 32px !important;
+  }
+  [data-phase] header [class$="_titleCluster"],
+  [data-phase] header [class$="_crumbs"] {
+    min-width: 0 !important;
+  }
+  [data-phase] header button[class*="_crumb"] {
+    max-width: calc(100vw - 104px) !important;
+    padding-left: 0 !important;
+    padding-right: 0 !important;
   }
   /* The directory toggle sits at the far left of the header (the header
      is position:relative; the data-slot wrappers are display:contents). */
@@ -1588,11 +1711,10 @@ function mobileApply(ctx) {
       }
     };
     const mark = () => {
-      for (const root of document.querySelectorAll('[data-phase] [class$="_root"]')) {
-        if (root.closest('[class$="_composerStack"]') === null) continue;
+      const selector = '[data-phase] [data-slot="conversation.composer.dock"] [class$="_root"]';
+      for (const root of document.querySelectorAll(selector)) {
         const text = root.textContent ?? "";
         if (!/(turns|steps|\bLLM\b|轮|步)/.test(text)) continue;
-        if (root.querySelector("textarea") !== null) continue;
         root.setAttribute("data-mobile-nav", "stats");
         moveTps(root);
         return;
@@ -1888,7 +2010,7 @@ var en2 = {
 
 // client/index.jsx
 var name = "dsh-pocket";
-var inject = ["slots", "connection", "remote", "remote.llm", "remote.settings", "remote.credentials", "layout", "locale", "sessionLogDownload"];
+var inject = ["slots", "connection", "layout", "locale", "sessionLogDownload"];
 function fmt(t, key, vars) {
   let s = t(key);
   if (vars) {
@@ -2540,576 +2662,17 @@ function PocketSettingsTab({ rpcCall, t }) {
     )
   );
 }
-var LLm_NS_FILTER = (ns) => typeof ns === "string" && ns.startsWith("llm-");
-function deriveKeyRef(provider) {
-  return provider.toUpperCase().replace(/[^A-Z0-9]+/g, "_") + "_API_KEY";
-}
-async function unwrap(promise, what) {
-  const res = await promise;
-  const inner = res?.result ?? res;
-  if (!inner?.ok) throw new Error(inner?.error?.message ?? what + " failed");
-  return inner.value;
-}
-function ModelsManagerTab({ api }) {
-  const [data, setData] = (0, import_react2.useState)(null);
-  const [error, setError] = (0, import_react2.useState)(null);
-  const [busy, setBusy] = (0, import_react2.useState)(false);
-  const [notice, setNotice] = (0, import_react2.useState)(null);
-  const [editing, setEditing] = (0, import_react2.useState)(null);
-  const [adding, setAdding] = (0, import_react2.useState)(null);
-  const load = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      const [directory, settingsDoc] = await Promise.all([
-        unwrap(api.llm.providers({}), "llm.providers"),
-        unwrap(api.settings.describe({}), "settings.describe")
-      ]);
-      const providers = directory.providers ?? [];
-      const llmNamespaces = (settingsDoc.namespaces ?? []).filter((n) => LLm_NS_FILTER(n.ns));
-      const nsByNs = new Map(llmNamespaces.map((n) => [n.ns, n]));
-      const refs = [...new Set(providers.map((p) => {
-        const ns = nsByNs.get(p.settingsNs);
-        const profile = p.settingsPath.length === 0 ? ns?.value : ns?.value?.providers?.[p.provider];
-        return profile?.apiKeyEnv ?? (p.settingsPath.length > 0 ? deriveKeyRef(p.provider) : null);
-      }).filter(Boolean))];
-      let credentials = {};
-      if (refs.length > 0) {
-        try {
-          const cred = await unwrap(api.credentials.describe({ refs }), "credentials.describe");
-          credentials = cred.credentials ?? {};
-        } catch {
-        }
-      }
-      setData({ providers, namespaces: nsByNs, writable: settingsDoc.writable !== false, credentials });
-    } catch (err) {
-      setError(err?.message ?? String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-  (0, import_react2.useEffect)(() => {
-    load();
-  }, []);
-  const saveEdit = async () => {
-    if (!editing) return;
-    setBusy(true);
-    setNotice(null);
-    try {
-      const entry = data.providers.find((p) => p.provider === editing.provider);
-      const ns = data.namespaces.get(entry.settingsNs);
-      const revision = ns?.revision ?? 0;
-      const base = entry.settingsPath.length === 0 ? [] : entry.settingsPath;
-      const ops = [];
-      const key = editing.keyDraft.trim();
-      if (key.length > 0) {
-        const ref = deriveKeyRef(editing.provider);
-        await unwrap(api.credentials.set({ ref, value: key }), "credentials.set");
-        if (entry.settingsPath.length === 0 && ns?.value?.apiKeyEnv !== ref) {
-          ops.push({ op: "set", path: ["apiKeyEnv"], value: ref });
-        }
-      }
-      if (editing.baseURL !== void 0 && editing.baseURL.trim() !== "") {
-        ops.push({ op: "set", path: [...base, "baseURL"], value: editing.baseURL.trim() });
-      }
-      if (editing.modelsTouched) {
-        if ((editing.models ?? []).length === 0) ops.push({ op: "unset", path: [...base, "models"] });
-        else ops.push({ op: "set", path: [...base, "models"], value: editing.models.map((m) => ({ ...m })) });
-      }
-      if (ops.length > 0) {
-        await unwrap(api.settings.mutate({
-          ns: entry.settingsNs,
-          ops,
-          expectedRevision: revision
-        }), "settings.mutate");
-      }
-      setNotice("\u2705 \u5DF2\u4FDD\u5B58 " + editing.provider);
-      setEditing(null);
-      await load();
-    } catch (err) {
-      setNotice("\u274C " + (err?.message ?? String(err)));
-    } finally {
-      setBusy(false);
-    }
-  };
-  const removeProvider = async (entry) => {
-    setBusy(true);
-    setNotice(null);
-    try {
-      const ns = data.namespaces.get(entry.settingsNs);
-      if (!ns?.user || entry.settingsPath.length === 0) throw new Error("\u4EC5\u81EA\u5B9A\u4E49 provider \u53EF\u5220\u9664");
-      await unwrap(api.settings.mutate({
-        ns: entry.settingsNs,
-        ops: [{ op: "unset", path: entry.settingsPath }],
-        expectedRevision: ns.revision ?? 0
-      }), "settings.mutate");
-      setNotice("\u{1F5D1}\uFE0F \u5DF2\u5220\u9664 " + entry.provider);
-      await load();
-    } catch (err) {
-      setNotice("\u274C " + (err?.message ?? String(err)));
-    } finally {
-      setBusy(false);
-    }
-  };
-  const createProvider = async () => {
-    if (!adding) return;
-    setBusy(true);
-    setNotice(null);
-    try {
-      const route = adding.route.trim().toLowerCase();
-      if (!/^[a-z][a-z0-9-]*$/.test(route)) throw new Error("\u8DEF\u7531 ID\uFF1A\u5C0F\u5199\u5B57\u6BCD\u5F00\u5934\uFF0C\u4EC5\u5C0F\u5199\u5B57\u6BCD/\u6570\u5B57/\u8FDE\u5B57\u7B26");
-      if ((data.providers ?? []).some((p) => p.provider === route)) throw new Error("\u8DEF\u7531 ID \u5DF2\u88AB\u5360\u7528\uFF1A" + route);
-      const baseURL = adding.baseURL.trim();
-      if (baseURL.length === 0) throw new Error("\u81EA\u5B9A\u4E49 provider \u9700\u8981 API \u5730\u5740");
-      const models = (adding.models ?? []).filter((m) => (m.id ?? "").trim() !== "");
-      if (models.length === 0) throw new Error("\u81EA\u5B9A\u4E49 provider \u81F3\u5C11\u9700\u8981\u4E00\u4E2A\u6A21\u578B\uFF08\u53EF\u5148\u62C9\u53D6\uFF09");
-      const key = adding.keyDraft.trim();
-      const ref = deriveKeyRef(route);
-      const ns = data.namespaces.get("llm-pi-ai");
-      const profile = {
-        ...adding.displayName.trim().length > 0 ? { displayName: adding.displayName.trim() } : {},
-        ...key.length > 0 ? { apiKeyEnv: ref } : {},
-        api: adding.api,
-        baseURL,
-        models: models.map((m) => ({ ...m }))
-      };
-      await unwrap(api.settings.mutate({
-        ns: "llm-pi-ai",
-        ops: [{ op: "set", path: ["providers", route], value: profile }],
-        expectedRevision: ns?.revision ?? 0
-      }), "settings.mutate");
-      if (key.length > 0) {
-        await unwrap(api.credentials.set({ ref, value: key }), "credentials.set");
-      }
-      setNotice("\u2705 \u5DF2\u521B\u5EFA " + route);
-      setAdding(null);
-      await load();
-    } catch (err) {
-      setNotice("\u274C " + (err?.message ?? String(err)));
-    } finally {
-      setBusy(false);
-    }
-  };
-  const rowOf = (entry) => {
-    const ns = data.namespaces.get(entry.settingsNs);
-    const profile = entry.settingsPath.length === 0 ? ns?.value : ns?.value?.providers?.[entry.provider];
-    const keyRef = profile?.apiKeyEnv ?? (entry.settingsPath.length > 0 ? deriveKeyRef(entry.provider) : null);
-    const cred = keyRef ? data.credentials[keyRef] : null;
-    const custom = entry.declared === true || entry.settingsPath.length > 0;
-    const open = editing?.provider === entry.provider;
-    return (0, import_react2.createElement)(
-      "div",
-      {
-        key: entry.provider,
-        style: { padding: "10px 0", borderTop: "1px solid var(--dsw-alias-border-l2,#e5e7eb)" }
-      },
-      (0, import_react2.createElement)(
-        "div",
-        { style: { display: "flex", alignItems: "center", gap: 8, fontSize: 13 } },
-        (0, import_react2.createElement)("span", {
-          title: entry.active ? "\u542F\u7528\u4E2D | active" : "\u672A\u542F\u7528 | inactive",
-          style: { color: entry.active ? "var(--dsw-alias-state-success-primary,#16a34a)" : "var(--dsw-alias-label-tertiary,#8b93a1)", fontSize: 11 }
-        }, "\u25CF"),
-        (0, import_react2.createElement)("span", { style: { fontWeight: 500 } }, entry.displayName),
-        custom ? (0, import_react2.createElement)("span", { style: { ...styles.muted, border: "1px solid var(--dsw-alias-border-l2,#e5e7eb)", borderRadius: 999, padding: "1px 8px", fontSize: 11 } }, "\u81EA\u5B9A\u4E49 | Custom") : null,
-        (0, import_react2.createElement)("span", { style: styles.muted }, entry.provider),
-        (0, import_react2.createElement)(
-          "span",
-          { style: { marginLeft: "auto", display: "flex", gap: 6 } },
-          (0, import_react2.createElement)("button", {
-            style: { ...styles.btn, height: 26, padding: "0 10px", fontSize: 12 },
-            onClick: () => {
-              setAdding(null);
-              if (open) {
-                setEditing(null);
-                return;
-              }
-              const modelsBase = entry.settingsPath.length === 0 ? ns?.value?.models : ns?.value?.providers?.[entry.provider]?.models;
-              const modelsCustomized = entry.settingsPath.length === 0 ? ns?.user && Array.isArray(ns.user.models) : ns?.user?.providers?.[entry.provider]?.models !== void 0;
-              setEditing({
-                provider: entry.provider,
-                keyDraft: "",
-                baseURL: profile?.baseURL ?? "",
-                models: Array.isArray(modelsBase) ? modelsBase.map((m) => ({ ...m })) : [],
-                modelsTouched: false,
-                modelsCustomized: modelsCustomized === true,
-                discovered: null,
-                discovering: false,
-                discoverPicked: []
-              });
-            }
-          }, open ? "\u6536\u8D77" : "\u7F16\u8F91"),
-          custom && data.writable ? (0, import_react2.createElement)("button", {
-            style: { ...styles.btn, height: 26, padding: "0 10px", fontSize: 12, color: "var(--dsw-alias-state-error-primary,#dc2626)" },
-            disabled: busy,
-            onClick: () => {
-              void removeProvider(entry);
-            }
-          }, "\u5220\u9664") : null
-        )
-      ),
-      (0, import_react2.createElement)(
-        "div",
-        { style: { ...styles.muted, marginTop: 3 } },
-        keyRef ? cred?.configured === true ? "\u{1F511} API \u5BC6\u94A5\u5DF2\u914D\u7F6E" : "\u{1F511} API \u5BC6\u94A5\u672A\u914D\u7F6E" : "\u6B64\u63D0\u4F9B\u65B9\u65E0\u9700\u5BC6\u94A5",
-        profile?.baseURL ? " \xB7 " + profile.baseURL : ""
-      ),
-      open ? (0, import_react2.createElement)(
-        "div",
-        { style: { marginTop: 8, display: "flex", flexDirection: "column", gap: 8 } },
-        keyRef || entry.settingsPath.length === 0 ? (0, import_react2.createElement)(
-          "label",
-          { style: { fontSize: 12, display: "flex", flexDirection: "column", gap: 4 } },
-          "API \u5BC6\u94A5\uFF08\u7559\u7A7A\u4FDD\u6301\u4E0D\u53D8\uFF09| API key",
-          (0, import_react2.createElement)("input", {
-            type: "password",
-            value: editing.keyDraft,
-            placeholder: cred?.configured === true ? "\u5DF2\u914D\u7F6E\u2014\u2014\u8F93\u5165\u65B0\u503C\u53EF\u66FF\u6362" : "\u8F93\u5165 API \u5BC6\u94A5",
-            style: styles.input,
-            onChange: (e) => setEditing({ ...editing, keyDraft: e.target.value })
-          })
-        ) : null,
-        (0, import_react2.createElement)(
-          "label",
-          { style: { fontSize: 12, display: "flex", flexDirection: "column", gap: 4 } },
-          "API \u5730\u5740\uFF08\u7559\u7A7A\u4FDD\u6301\u4E0D\u53D8\uFF09| Base URL",
-          (0, import_react2.createElement)("input", {
-            value: editing.baseURL,
-            placeholder: "https://api.example.com/v1",
-            style: styles.input,
-            onChange: (e) => setEditing({ ...editing, baseURL: e.target.value })
-          })
-        ),
-        // ---- 模型目录编辑（与核心页同语义）----
-        (0, import_react2.createElement)(
-          "div",
-          { style: { fontSize: 12, display: "flex", flexDirection: "column", gap: 6 } },
-          (0, import_react2.createElement)(
-            "div",
-            { style: { display: "flex", alignItems: "center", gap: 8 } },
-            (0, import_react2.createElement)("strong", null, "\u6A21\u578B\u76EE\u5F55 | Models"),
-            (0, import_react2.createElement)("span", { style: styles.muted }, editing.modelsCustomized ? "\uFF08\u5DF2\u81EA\u5B9A\u4E49\uFF0C\u751F\u6548\u4E2D\u76EE\u5F55\u5982\u4E0A\uFF09" : "\uFF08\u7EE7\u627F\u63D0\u4F9B\u65B9\u9ED8\u8BA4\uFF09"),
-            (0, import_react2.createElement)("button", {
-              style: { ...styles.btn, height: 24, padding: "0 8px", fontSize: 11 },
-              disabled: editing.discovering,
-              onClick: () => {
-                setEditing({ ...editing, discovering: true });
-                const payload = { settingsNs: entry.settingsNs, provider: entry.provider };
-                const key = editing.keyDraft.trim();
-                if (key.length > 0) payload.apiKey = key;
-                const bURL = editing.baseURL.trim();
-                if (bURL.length > 0) payload.baseURL = bURL;
-                unwrap(api.llm.discoverModels(payload), "llm.discoverModels").then((v) => setEditing((cur) => cur && cur.provider === entry.provider ? { ...cur, discovered: v.models ?? [], discovering: false } : cur)).catch((err) => {
-                  setNotice("\u274C \u62C9\u53D6\u5931\u8D25\uFF1A" + (err?.message ?? err));
-                  setEditing((cur) => cur ? { ...cur, discovering: false } : cur);
-                });
-              }
-            }, editing.discovering ? "\u62C9\u53D6\u4E2D\u2026" : "\u27F3 \u4ECE\u63D0\u4F9B\u65B9\u62C9\u53D6 | Fetch")
-          ),
-          // 当前编辑中的目录（可增删改）
-          (editing.models ?? []).map((m, i) => (0, import_react2.createElement)(
-            "div",
-            { key: i, style: { display: "flex", gap: 4, alignItems: "center" } },
-            (0, import_react2.createElement)("input", {
-              value: m.id,
-              placeholder: "\u6A21\u578B ID",
-              style: { ...styles.input, flex: 2 },
-              onChange: (e) => {
-                const next = [...editing.models];
-                next[i] = { ...m, id: e.target.value };
-                setEditing({ ...editing, models: next, modelsTouched: true });
-              }
-            }),
-            (0, import_react2.createElement)("input", {
-              value: m.name ?? "",
-              placeholder: "\u663E\u793A\u540D(\u53EF\u9009)",
-              style: { ...styles.input, flex: 1.2 },
-              onChange: (e) => {
-                const next = [...editing.models];
-                next[i] = { ...m, name: e.target.value };
-                setEditing({ ...editing, models: next, modelsTouched: true });
-              }
-            }),
-            (0, import_react2.createElement)("input", {
-              value: m.contextWindow ?? "",
-              placeholder: "\u4E0A\u4E0B\u6587",
-              style: { ...styles.input, flex: 0.8 },
-              type: "number",
-              onChange: (e) => {
-                const next = [...editing.models];
-                next[i] = { ...m, contextWindow: e.target.value === "" ? void 0 : Number(e.target.value) };
-                setEditing({ ...editing, models: next, modelsTouched: true });
-              }
-            }),
-            (0, import_react2.createElement)("button", {
-              style: { ...styles.btn, height: 26, padding: "0 8px", fontSize: 11, color: "#dc2626" },
-              onClick: () => setEditing({ ...editing, models: editing.models.filter((_, j) => j !== i), modelsTouched: true })
-            }, "\u2715")
-          )),
-          (0, import_react2.createElement)(
-            "button",
-            {
-              style: { ...styles.btn, height: 26, padding: "0 10px", fontSize: 11 },
-              onClick: () => setEditing({ ...editing, models: [...editing.models ?? [], { id: "" }], modelsTouched: true })
-            },
-            "+ \u624B\u52A8\u6DFB\u52A0\u6A21\u578B"
-          ),
-          editing.modelsTouched && (editing.models ?? []).length === 0 ? (0, import_react2.createElement)("div", { style: styles.muted }, "\u76EE\u5F55\u5DF2\u6E05\u7A7A\u2014\u2014\u4FDD\u5B58\u540E\u7EE7\u627F\u63D0\u4F9B\u65B9\u9ED8\u8BA4\u76EE\u5F55") : null,
-          // 拉取结果：勾选采纳
-          Array.isArray(editing.discovered) && editing.discovered.length > 0 ? (0, import_react2.createElement)(
-            "div",
-            { style: { borderTop: "1px dashed var(--dsw-alias-border-l2,#e5e7eb)", paddingTop: 6, display: "flex", flexDirection: "column", gap: 4 } },
-            (0, import_react2.createElement)("div", { style: styles.muted }, "\u63D0\u4F9B\u65B9\u53EF\u7528\u6A21\u578B\uFF08\u52FE\u9009\u91C7\u7EB3\uFF09\uFF1A"),
-            editing.discovered.map((d) => {
-              const picked = (editing.discoverPicked ?? []).includes(d.id);
-              return (0, import_react2.createElement)(
-                "label",
-                { key: d.id, style: { display: "flex", gap: 6, alignItems: "center", fontSize: 12 } },
-                (0, import_react2.createElement)("input", {
-                  type: "checkbox",
-                  checked: picked,
-                  onChange: () => setEditing({
-                    ...editing,
-                    discoverPicked: picked ? (editing.discoverPicked ?? []).filter((x) => x !== d.id) : [...editing.discoverPicked ?? [], d.id]
-                  })
-                }),
-                (0, import_react2.createElement)("span", null, d.name || d.id, d.contextWindow ? " \uFF08" + d.contextWindow + " ctx\uFF09" : "")
-              );
-            }),
-            (editing.discoverPicked ?? []).length > 0 ? (0, import_react2.createElement)("button", {
-              style: { ...styles.btn, height: 26, padding: "0 10px", fontSize: 11 },
-              onClick: () => {
-                const pickedIds = new Set(editing.discoverPicked ?? []);
-                const existing = new Set((editing.models ?? []).map((m) => m.id));
-                const additions = (editing.discovered ?? []).filter((d) => pickedIds.has(d.id) && !existing.has(d.id)).map((d) => ({ id: d.id, ...d.name ? { name: d.name } : {}, ...d.contextWindow ? { contextWindow: d.contextWindow } : {}, ...d.maxTokens ? { maxTokens: d.maxTokens } : {} }));
-                setEditing({ ...editing, models: [...editing.models ?? [], ...additions], modelsTouched: true, discovered: null, discoverPicked: [] });
-              }
-            }, "\u91C7\u7EB3\u52FE\u9009 (" + (editing.discoverPicked ?? []).length + ")") : null
-          ) : null
-        ),
-        (0, import_react2.createElement)(
-          "div",
-          null,
-          (0, import_react2.createElement)(
-            "button",
-            { style: styles.primary, disabled: busy || !data.writable, onClick: () => {
-              void saveEdit();
-            } },
-            busy ? "\u4FDD\u5B58\u4E2D\u2026" : "\u4FDD\u5B58 | Save"
-          )
-        )
-      ) : null
-    );
-  };
-  return (0, import_react2.createElement)(
-    "div",
-    { style: styles.card },
-    (0, import_react2.createElement)(
-      "div",
-      { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 } },
-      (0, import_react2.createElement)("strong", null, "\u{1F916} \u6A21\u578B\u7BA1\u7406 | Models"),
-      (0, import_react2.createElement)(
-        "button",
-        { style: { ...styles.btn, height: 28, padding: "0 12px", fontSize: 12 }, onClick: load, disabled: busy },
-        busy ? "\u52A0\u8F7D\u4E2D\u2026" : "\u5237\u65B0 | Refresh"
-      )
-    ),
-    (0, import_react2.createElement)(
-      "div",
-      { style: { ...styles.muted, marginTop: 4 } },
-      data && data.writable === false ? "\u26A0\uFE0F \u5F53\u524D\u90E8\u7F72\u8BBE\u7F6E\u53EA\u8BFB\uFF0C\u4EC5\u53EF\u67E5\u770B" : "\u5728\u624B\u673A\u4E0A\u914D\u7F6E\u63D0\u4F9B\u65B9\u3001API \u5BC6\u94A5\u4E0E\u5730\u5740\uFF08\u4EC5\u5C40\u57DF\u7F51\u53EF\u7528\uFF09"
-    ),
-    notice ? (0, import_react2.createElement)("div", { style: { fontSize: 12, marginTop: 8, wordBreak: "break-all" } }, notice) : null,
-    error ? (0, import_react2.createElement)("div", { style: { color: "var(--dsw-alias-state-error-primary,#dc2626)", fontSize: 12, marginTop: 10 } }, "\u274C " + error) : null,
-    data === null && !error ? (0, import_react2.createElement)("div", { style: { ...styles.muted, marginTop: 10 } }, "\u52A0\u8F7D\u4E2D\u2026 | loading\u2026") : null,
-    data ? (0, import_react2.createElement)(
-      "div",
-      { style: { marginTop: 10 } },
-      data.providers.length === 0 ? (0, import_react2.createElement)("div", { style: styles.muted }, "\u6682\u65E0\u63D0\u4F9B\u65B9") : data.providers.map(rowOf)
-    ) : null,
-    // ---- 添加自定义 provider（与核心 CustomProviderCard 同契约）----
-    data && data.writable ? (0, import_react2.createElement)(
-      "div",
-      { style: { ...styles.block, marginTop: 16 } },
-      adding === null ? (0, import_react2.createElement)(
-        "button",
-        { style: styles.btn, onClick: () => {
-          setEditing(null);
-          setAdding({ route: "", displayName: "", baseURL: "", api: "openai", keyDraft: "", models: [], discovered: null, discovering: false, discoverPicked: [] });
-        } },
-        "\uFF0B \u6DFB\u52A0\u81EA\u5B9A\u4E49 provider | Add custom provider"
-      ) : (0, import_react2.createElement)(
-        "div",
-        { style: { display: "flex", flexDirection: "column", gap: 8 } },
-        (0, import_react2.createElement)(
-          "div",
-          { style: { display: "flex", alignItems: "center", justifyContent: "space-between" } },
-          (0, import_react2.createElement)("strong", null, "\u65B0\u5EFA\u81EA\u5B9A\u4E49 provider"),
-          (0, import_react2.createElement)("button", { style: { ...styles.btn, height: 26, padding: "0 10px", fontSize: 12 }, onClick: () => setAdding(null) }, "\u53D6\u6D88")
-        ),
-        (0, import_react2.createElement)(
-          "label",
-          { style: { fontSize: 12, display: "flex", flexDirection: "column", gap: 4 } },
-          "\u8DEF\u7531 ID\uFF08\u5C0F\u5199\u5B57\u6BCD\u5F00\u5934\uFF0C\u552F\u4E00\uFF09",
-          (0, import_react2.createElement)("input", {
-            value: adding.route,
-            placeholder: "my-provider",
-            style: styles.input,
-            onChange: (e) => setAdding({ ...adding, route: e.target.value })
-          })
-        ),
-        (0, import_react2.createElement)(
-          "label",
-          { style: { fontSize: 12, display: "flex", flexDirection: "column", gap: 4 } },
-          "\u663E\u793A\u540D\u79F0\uFF08\u53EF\u9009\uFF09",
-          (0, import_react2.createElement)("input", {
-            value: adding.displayName,
-            placeholder: "My Provider",
-            style: styles.input,
-            onChange: (e) => setAdding({ ...adding, displayName: e.target.value })
-          })
-        ),
-        (0, import_react2.createElement)(
-          "label",
-          { style: { fontSize: 12, display: "flex", flexDirection: "column", gap: 4 } },
-          "API \u534F\u8BAE",
-          (0, import_react2.createElement)(
-            "select",
-            {
-              value: adding.api,
-              style: styles.input,
-              onChange: (e) => setAdding({ ...adding, api: e.target.value })
-            },
-            (0, import_react2.createElement)("option", { value: "openai" }, "OpenAI \u517C\u5BB9"),
-            (0, import_react2.createElement)("option", { value: "anthropic" }, "Anthropic \u517C\u5BB9")
-          )
-        ),
-        (0, import_react2.createElement)(
-          "label",
-          { style: { fontSize: 12, display: "flex", flexDirection: "column", gap: 4 } },
-          "API \u5730\u5740",
-          (0, import_react2.createElement)("input", {
-            value: adding.baseURL,
-            placeholder: "https://api.example.com/v1",
-            style: styles.input,
-            onChange: (e) => setAdding({ ...adding, baseURL: e.target.value })
-          })
-        ),
-        (0, import_react2.createElement)(
-          "label",
-          { style: { fontSize: 12, display: "flex", flexDirection: "column", gap: 4 } },
-          "API \u5BC6\u94A5\uFF08\u53EF\u7559\u7A7A\u2014\u2014\u82E5\u8BE5\u670D\u52A1\u65E0\u9700\u9274\u6743\uFF09",
-          (0, import_react2.createElement)("input", {
-            type: "password",
-            value: adding.keyDraft,
-            style: styles.input,
-            onChange: (e) => setAdding({ ...adding, keyDraft: e.target.value })
-          })
-        ),
-        // 模型目录（同编辑区组件逻辑，独立状态）
-        (0, import_react2.createElement)(
-          "div",
-          { style: { fontSize: 12, display: "flex", flexDirection: "column", gap: 6 } },
-          (0, import_react2.createElement)(
-            "div",
-            { style: { display: "flex", alignItems: "center", gap: 8 } },
-            (0, import_react2.createElement)("strong", null, "\u6A21\u578B\u76EE\u5F55"),
-            (0, import_react2.createElement)("button", {
-              style: { ...styles.btn, height: 24, padding: "0 8px", fontSize: 11 },
-              disabled: adding.discovering,
-              onClick: () => {
-                setAdding({ ...adding, discovering: true });
-                const payload = { settingsNs: "llm-pi-ai", api: adding.api };
-                const bURL = adding.baseURL.trim();
-                if (bURL) payload.baseURL = bURL;
-                const key = adding.keyDraft.trim();
-                if (key) payload.apiKey = key;
-                unwrap(api.llm.discoverModels(payload), "llm.discoverModels").then((v) => setAdding((cur) => cur ? { ...cur, discovered: v.models ?? [], discovering: false } : cur)).catch((err) => {
-                  setNotice("\u274C \u62C9\u53D6\u5931\u8D25\uFF1A" + (err?.message ?? err));
-                  setAdding((cur) => cur ? { ...cur, discovering: false } : cur);
-                });
-              }
-            }, adding.discovering ? "\u62C9\u53D6\u4E2D\u2026" : "\u27F3 \u4ECE\u63D0\u4F9B\u65B9\u62C9\u53D6 | Fetch")
-          ),
-          (adding.models ?? []).map((m, i) => (0, import_react2.createElement)(
-            "div",
-            { key: i, style: { display: "flex", gap: 4, alignItems: "center" } },
-            (0, import_react2.createElement)("input", {
-              value: m.id,
-              placeholder: "\u6A21\u578B ID",
-              style: { ...styles.input, flex: 2 },
-              onChange: (e) => {
-                const next = [...adding.models];
-                next[i] = { ...m, id: e.target.value };
-                setAdding({ ...adding, models: next });
-              }
-            }),
-            (0, import_react2.createElement)("input", {
-              value: m.name ?? "",
-              placeholder: "\u663E\u793A\u540D(\u53EF\u9009)",
-              style: { ...styles.input, flex: 1.2 },
-              onChange: (e) => {
-                const next = [...adding.models];
-                next[i] = { ...m, name: e.target.value };
-                setAdding({ ...adding, models: next });
-              }
-            }),
-            (0, import_react2.createElement)("button", {
-              style: { ...styles.btn, height: 26, padding: "0 8px", fontSize: 11, color: "#dc2626" },
-              onClick: () => setAdding({ ...adding, models: adding.models.filter((_, j) => j !== i) })
-            }, "\u2715")
-          )),
-          (0, import_react2.createElement)("button", {
-            style: { ...styles.btn, height: 26, padding: "0 10px", fontSize: 11 },
-            onClick: () => setAdding({ ...adding, models: [...adding.models ?? [], { id: "" }] })
-          }, "+ \u624B\u52A8\u6DFB\u52A0\u6A21\u578B"),
-          Array.isArray(adding.discovered) && adding.discovered.length > 0 ? (0, import_react2.createElement)(
-            "div",
-            { style: { borderTop: "1px dashed var(--dsw-alias-border-l2,#e5e7eb)", paddingTop: 6, display: "flex", flexDirection: "column", gap: 4 } },
-            (0, import_react2.createElement)("div", { style: styles.muted }, "\u63D0\u4F9B\u65B9\u53EF\u7528\u6A21\u578B\uFF08\u52FE\u9009\u91C7\u7EB3\uFF09\uFF1A"),
-            adding.discovered.map((d) => {
-              const picked = (adding.discoverPicked ?? []).includes(d.id);
-              return (0, import_react2.createElement)(
-                "label",
-                { key: d.id, style: { display: "flex", gap: 6, alignItems: "center", fontSize: 12 } },
-                (0, import_react2.createElement)("input", {
-                  type: "checkbox",
-                  checked: picked,
-                  onChange: () => setAdding({
-                    ...adding,
-                    discoverPicked: picked ? (adding.discoverPicked ?? []).filter((x) => x !== d.id) : [...adding.discoverPicked ?? [], d.id]
-                  })
-                }),
-                (0, import_react2.createElement)("span", null, d.name || d.id, d.contextWindow ? " \uFF08" + d.contextWindow + " ctx\uFF09" : "")
-              );
-            }),
-            (adding.discoverPicked ?? []).length > 0 ? (0, import_react2.createElement)("button", {
-              style: { ...styles.btn, height: 26, padding: "0 10px", fontSize: 11 },
-              onClick: () => {
-                const pickedIds = new Set(adding.discoverPicked ?? []);
-                const existing = new Set((adding.models ?? []).map((m) => m.id));
-                const additions = (adding.discovered ?? []).filter((d) => pickedIds.has(d.id) && !existing.has(d.id)).map((d) => ({ id: d.id, ...d.name ? { name: d.name } : {}, ...d.contextWindow ? { contextWindow: d.contextWindow } : {}, ...d.maxTokens ? { maxTokens: d.maxTokens } : {} }));
-                setAdding({ ...adding, models: [...adding.models ?? [], ...additions], discovered: null, discoverPicked: [] });
-              }
-            }, "\u91C7\u7EB3\u52FE\u9009 (" + (adding.discoverPicked ?? []).length + ")") : null
-          ) : null
-        ),
-        (0, import_react2.createElement)(
-          "div",
-          null,
-          (0, import_react2.createElement)(
-            "button",
-            { style: styles.primary, disabled: busy, onClick: () => {
-              void createProvider();
-            } },
-            busy ? "\u521B\u5EFA\u4E2D\u2026" : "\u521B\u5EFA | Create"
-          )
-        )
-      )
-    ) : null
-  );
-}
 function apply(ctx) {
+  if (ctx?.connection) {
+    try {
+      Object.defineProperty(ctx.connection, "isLoopback", { value: true, writable: true, configurable: true });
+    } catch {
+      try {
+        ctx.connection.isLoopback = true;
+      } catch {
+      }
+    }
+  }
   mobileApply(ctx);
   const rpcCall = (endpoint, payload, signal) => ctx.connection.rpc.call(POCKET_RPC_CHANNEL, endpoint, payload, signal);
   const translate = ctx.locale.bind(NS2);
@@ -3125,50 +2688,6 @@ function apply(ctx) {
         inject: () => ({ rpcCall, t: translate })
       },
       PocketSettingsTab
-    )
-  );
-  const api = ctx.remote?.llm ? {
-    llm: {
-      providers: async () => {
-        const r = await ctx.remote.llm.listConfigurableProviders();
-        return { ok: r?.ok, error: r?.error, value: { providers: r?.value ?? [] } };
-      },
-      discoverModels: async (payload) => {
-        const { settingsNs, ...request } = payload ?? {};
-        const r = await ctx.remote.llm.discoverModels(settingsNs, request);
-        return { ok: r?.ok, error: r?.error, value: { models: r?.value ?? [] } };
-      }
-    },
-    // 新宿主 Remote 面是位置参数且 settings.describe 为 0 参（gateway client arity
-    // 守卫按 descriptor.parameters 严格计数，多余实参直接抛
-    // 「client api: settings/describe expected 0 argument(s), got 1」）。
-    // 页面沿用旧宿主命名参数包契约（describe({}) / mutate({ns,ops,expectedRevision}) /
-    // credentials.describe({refs}) / credentials.set({ref,value})），在适配层拆包：
-    //   settings.describe() → @Remote describe()
-    //   settings.mutate({ns,ops,expectedRevision}) → @Remote mutate(ns, ops, expectedRevision)
-    //   credentials.describe({refs}) → @Remote describe(refs)
-    //   credentials.set({ref,value}) → @Remote set(ref, value)
-    // 旧宿主回落 ctx.connection.api，页面契约不变。
-    settings: {
-      describe: async () => ctx.remote.settings.describe(),
-      mutate: async (bag) => ctx.remote.settings.mutate(bag.ns, bag.ops, bag.expectedRevision)
-    },
-    credentials: {
-      describe: async (bag) => ctx.remote.credentials.describe(bag.refs),
-      set: async (bag) => ctx.remote.credentials.set(bag.ref, bag.value)
-    }
-  } : ctx.connection?.api;
-  ctx.slots.inject(
-    "settings.section",
-    () => ctx.slots.register(
-      {
-        name: "settings.section",
-        id: "pocket-models",
-        order: 2,
-        label: () => "\u6A21\u578B\u7BA1\u7406",
-        inject: () => ({ api })
-      },
-      ModelsManagerTab
     )
   );
 }

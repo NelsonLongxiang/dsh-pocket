@@ -6,8 +6,7 @@ import { createServer, request as httpRequest } from 'node:http';
 import { connect } from 'node:net';
 import { WebSocket, WebSocketServer } from 'ws';
 
-import { createPocketProxy, tokenCookieName } from '../lib/proxy.mjs';
-
+import { createPocketProxy, tokenCookieName, createHandshakeTracker } from '../lib/proxy.mjs';
 /** 构造一个带掩码的 WS 文本帧（浏览器在握手后立即发的首帧，会进 upgrade 的 head）。 */
 function maskedTextFrame(text) {
   const payload = Buffer.from(text);
@@ -908,6 +907,179 @@ test('登录速率限制（issue #40 改进版 A）：单 IP 失败达阈值锁�
   }
 });
 
+test('issue #90：?token= 与 WS 的密码尝试同样计入限速（堵掉可绕开登录限速的无限穷举通道）', async () => {
+  const TOKEN = '12345678';
+  const up = createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    res.end('<html><body>dsh</body></html>');
+  });
+  await new Promise((r) => up.listen(0, '127.0.0.1', r));
+  const proxy = await createPocketProxy({
+    port: 0, host: '127.0.0.1',
+    upstream: { host: '127.0.0.1', port: up.address().port },
+    auth: { getToken: () => TOKEN, isProtected: () => true, sessionKey: 'k' },
+    rateLimit: { windowMs: 60_000, maxFailures: 3, lockMs: 5_000, globalMaxFailures: 100, globalLockMs: 3_000 },
+  });
+
+  /** 以 ?token= 猜一次密码（模拟扫码/分享链接直达的那条通道）。 */
+  const guess = (ip, pin, path = null) => new Promise((resolve, reject) => {
+    const req = httpRequest({
+      host: '127.0.0.1', port: proxy.port, method: 'GET',
+      path: path ?? `/?token=${pin}`,
+      headers: { Host: 'abc.trycloudflare.com', 'cf-connecting-ip': ip },
+    }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString('utf8') }));
+    });
+    req.on('error', reject);
+    req.end();
+  });
+
+  /** 发起一次 WS upgrade，返回状态行。 */
+  const wsGuess = (ip, pin) => new Promise((resolve, reject) => {
+    const sock = connect(proxy.port, '127.0.0.1', () => {
+      sock.write(
+        `GET /api/events.mux?token=${pin} HTTP/1.1\r\nHost: abc.trycloudflare.com\r\n`
+        + `cf-connecting-ip: ${ip}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n`
+        + 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n',
+      );
+    });
+    let buf = '';
+    sock.on('data', (c) => { buf += c.toString('utf8'); });
+    sock.on('close', () => resolve(buf.split('\r\n')[0] ?? ''));
+    sock.on('error', reject);
+    setTimeout(() => sock.destroy(), 500);
+  });
+
+  try {
+    // 1) 无凭据的普通访问不算密码尝试——否则正常用户第一次打开就会把自己锁死
+    for (let i = 0; i < 6; i++) {
+      const r = await guess('10.9.0.1', '', '/');
+      assert.equal(r.status, 200, '未带凭据只是看到登录页');
+      assert.ok(!r.body.includes('尝试次数过多'), `第 ${i + 1} 次无凭据访问不应计入失败`);
+    }
+
+    // 2) ?token= 猜错要计数：3 次后锁定（此前这条通道完全不计数，可全速穷举）
+    for (let i = 0; i < 3; i++) {
+      const r = await guess('10.9.0.2', '00000000');
+      assert.equal(r.status, 200, `第 ${i + 1} 次猜错返回登录页`);
+    }
+    const locked = await guess('10.9.0.2', '00000000');
+    assert.ok(locked.body.includes('尝试次数过多'), '?token= 猜错达阈值后被锁');
+
+    // 3) 锁定期内即使给对了密码也不放行——否则锁定窗口本身就是免费穷举窗口
+    const lockedButRight = await guess('10.9.0.2', TOKEN);
+    assert.ok(lockedButRight.body.includes('尝试次数过多'), '锁定期内不再比对密码');
+    assert.ok(
+      !(lockedButRight.headers['set-cookie'] ?? []).toString().includes('dsh_pocket_token'),
+      '锁定期内不得种认证 cookie',
+    );
+
+    // 4) 非 HTML 请求（API 子资源）在锁定期给 429 + retry-after，便于客户端退避
+    const apiLocked = await guess('10.9.0.2', '00000000', `/api/x?token=00000000`);
+    assert.equal(apiLocked.status, 429, '锁定期 API 请求 429');
+    assert.ok(String(apiLocked.headers['retry-after'] ?? '').length > 0, '带 retry-after');
+
+    // 5) 正确的 ?token= 直达要清空计数（分享链接的正常用法不应逐步累积到锁定）
+    await guess('10.9.0.3', '00000000');
+    await guess('10.9.0.3', '00000000');
+    const ok = await guess('10.9.0.3', TOKEN);
+    assert.ok(
+      (ok.headers['set-cookie'] ?? []).toString().includes('dsh_pocket_token'),
+      '正确 ?token= 放行并种 cookie',
+    );
+    // 清空的证据：又要重新累计 3 次才锁（前 2 次仍是普通错误提示）
+    for (let i = 0; i < 2; i++) {
+      const r = await guess('10.9.0.3', '00000000');
+      assert.ok(!r.body.includes('尝试次数过多'), `成功后计数已清空，第 ${i + 1} 次失败不锁`);
+    }
+    const relocked = await guess('10.9.0.3', '00000000');
+    assert.ok(relocked.body.includes('尝试次数过多'), '重新累计到阈值才锁');
+
+    // 6) WS 通道的 token 猜测同样计数（否则换到 WS 上继续无限穷举）
+    for (let i = 0; i < 3; i++) {
+      const line = await wsGuess('10.9.0.4', '00000000');
+      assert.ok(line.includes('401'), `WS 第 ${i + 1} 次猜错 401`);
+    }
+    const wsLocked = await wsGuess('10.9.0.4', '00000000');
+    assert.ok(wsLocked.includes('429'), 'WS 猜错达阈值后被锁 429');
+  } finally {
+    await proxy.close();
+    await new Promise((r) => up.close(r));
+  }
+});
+
+test('issue #90：Host 头不可再伪造成本机——用 TCP 源地址给声明设下限（只收紧不放松）', async () => {
+  const { policyHost, classifySource } = await import('../lib/proxy.mjs');
+  const reqFrom = (addr) => ({ socket: { remoteAddress: addr } });
+
+  // --- 源地址分类：认不出的形态一律按公网兜底（fail closed） ---
+  assert.equal(classifySource('127.0.0.1'), 'loopback');
+  assert.equal(classifySource('::1'), 'loopback');
+  assert.equal(classifySource('::ffff:127.0.0.1'), 'loopback', 'IPv4-mapped IPv6 要先归一化');
+  assert.equal(classifySource('192.168.1.9'), 'lan');
+  assert.equal(classifySource('::ffff:192.168.1.9'), 'lan');
+  assert.equal(classifySource('100.101.1.2'), 'lan', 'CGNAT/Tailscale 段算局域网');
+  assert.equal(classifySource('169.254.1.2'), 'lan', 'IPv4 link-local');
+  assert.equal(classifySource('fe80::1'), 'lan');
+  assert.equal(classifySource('203.0.113.9'), 'public');
+  assert.equal(classifySource('2001:db8::1'), 'public', '全局 IPv6 源不能被当成本机');
+  assert.equal(classifySource(''), null, '拿不到源地址 → 不做收紧');
+  assert.equal(classifySource(undefined), null);
+
+  // --- 攻击面：伪造 Host 冒充本机，被源地址拆穿 ---
+  assert.equal(
+    policyHost(reqFrom('192.168.1.9'), '127.0.0.1:3081'), '192.168.1.9',
+    '局域网直连伪造 Host: 127.0.0.1 → 按局域网判定（此前会被当成本机免密）',
+  );
+  assert.equal(
+    policyHost(reqFrom('192.168.1.9'), 'localhost:3081'), '192.168.1.9',
+    'Host: localhost 同样不可信',
+  );
+  assert.equal(
+    policyHost(reqFrom('203.0.113.9'), '127.0.0.1:3081'), '203.0.113.9',
+    '公网直连伪造本机 Host → 按公网判定（强制公网密码）',
+  );
+  assert.equal(
+    policyHost(reqFrom('203.0.113.9'), '192.168.1.5:3081'), '203.0.113.9',
+    '公网直连伪造私网 Host → 收紧到公网',
+  );
+
+  // --- 只收紧不放松：cloudflared 从 127.0.0.1 回连，不能把公网降级成本机免密 ---
+  assert.equal(
+    policyHost(reqFrom('127.0.0.1'), 'abc.trycloudflare.com'), 'abc.trycloudflare.com',
+    '经隧道进来的公网请求源地址就是 127.0.0.1，绝不能因此降级',
+  );
+  assert.equal(
+    policyHost(reqFrom('127.0.0.1'), 'pocket.example.com'), 'pocket.example.com',
+    '自建命名隧道同理',
+  );
+  assert.equal(
+    policyHost(reqFrom('192.168.1.9'), 'pocket.example.com'), 'pocket.example.com',
+    '局域网源 + 公网 Host（前置反代场景）保持公网判定，不放松',
+  );
+
+  // --- 声明与来源一致时原样透传（含用户手动设置的「局域网地址」覆盖不受影响） ---
+  assert.equal(policyHost(reqFrom('127.0.0.1'), '127.0.0.1:3081'), '127.0.0.1:3081');
+  assert.equal(policyHost(reqFrom('192.168.1.9'), '192.168.1.5:3081'), '192.168.1.5:3081');
+  assert.equal(
+    policyHost(reqFrom(''), '127.0.0.1:3081'), '127.0.0.1:3081',
+    '拿不到源地址时保持原有行为，不误伤',
+  );
+});
+
+test('issue #90：HTTP 与 WS 两条入口都必须走 policyHost，不能只改一边', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../lib/proxy.mjs', import.meta.url), 'utf8');
+  const wired = src.match(/policyHost\(req, String\(req\.headers\.host \?\? ''\)\)/g) ?? [];
+  assert.equal(wired.length, 2, 'createServer 与 server.on("upgrade") 各一处');
+  assert.ok(
+    !/const host = String\(req\.headers\.host \?\? ''\);/.test(src),
+    '不得再有直接把原始 Host 头当策略依据的入口',
+  );
+});
+
 test('advancedNoticeScript：注入 advanced 模式提示覆盖层（issue #19）', async () => {
   const { advancedNoticeScript } = await import('../lib/proxy.mjs');
   const s = advancedNoticeScript();
@@ -1039,7 +1211,7 @@ test('端到端（issue #75）：代理转发前清掉 dsh-desktop-*，上游拿
   }
 });
 
-test('端到端（issue #77）：代理自动补 token 完成会话握手——首屏 303 拿 cookie，之后正常返回首页', async () => {
+test('端到端（issue #77 + #91）：代理自动补 token 完成会话握手——首屏过渡页下发 cookie，之后正常返回首页', async () => {
   const http = await import('node:http');
   const TOK = 'launch-token-abc123';
   const seen = [];
@@ -1067,22 +1239,94 @@ test('端到端（issue #77）：代理自动补 token 完成会话握手——�
   });
   const base = `http://127.0.0.1:${proxy.port}`;
   try {
-    // 第一次访问（手机扫码进来的 URL 没有 token）：代理补 token → 上游 303 + 下发 cookie
+    // 第一次访问（手机扫码进来的 URL 没有 token）：代理补 token → 上游 303 + 下发 cookie。
+    // issue #91：这里不再是 303（Safari 会丢 3xx 上的 cookie → 死循环），而是 200 过渡页，
+    // Set-Cookie 照发、meta refresh 跳回 `/`。
     const first = await fetch(`${base}/`, { redirect: 'manual', headers: { host: 'abc.trycloudflare.com' } });
-    assert.equal(first.status, 303, '首屏触发 token 交换（303）');
+    assert.equal(first.status, 200, '首屏返回 200 过渡页（不是 303）');
+    assert.equal(first.headers.get('x-dsh-pocket-handshake'), 'transition', '标记为握手过渡页');
     const setCookie = first.headers.get('set-cookie') ?? '';
-    assert.ok(setCookie.includes('dsh-auth-'), '下发会话 cookie');
+    assert.ok(setCookie.includes('dsh-auth-'), '过渡页照常下发会话 cookie');
+    const page = await first.text();
+    assert.match(page, /http-equiv="refresh"/, '过渡页用 meta refresh 跳回根路径');
+    assert.match(page, /url=\//, '跳转目标是干净的 /');
     assert.ok(seen.some((u) => u.includes(`token=${TOK}`)), '上游确实收到了启动 token');
 
-    // 浏览器带着 cookie 再访问：不再补 token → 直接拿到首页（不会 303 循环）
+    // 浏览器带着 cookie 再访问：不再补 token → 直接拿到首页（不会循环）
     const second = await fetch(`${base}/`, { redirect: 'manual', headers: { host: 'abc.trycloudflare.com', cookie: 'dsh-auth-abc=1' } });
     assert.equal(second.status, 200, '带 cookie 直接返回首页');
     assert.match(await second.text(), /index/, '首页内容正确');
-    assert.ok(!seen[seen.length - 1].includes('token='), '带 cookie 的请求不再补 token（防 303 循环）');
+    assert.ok(!seen[seen.length - 1].includes('token='), '带 cookie 的请求不再补 token（防循环）');
   } finally {
     await proxy.close();
     await new Promise((r) => upstream.close(r));
   }
+});
+
+test('issue #91：cookie 回不来时握手不会无限循环——达到上限后给可操作提示页', async () => {
+  const http = await import('node:http');
+  const TOK = 'launch-token-abc123';
+  let upstreamHits = 0;
+  const seen = [];
+  // 上游永远 303（模拟 Safari 场景：cookie 下发了但浏览器不回传）
+  const upstream = http.createServer((req, res) => {
+    upstreamHits += 1;
+    seen.push(req.url);
+    res.writeHead(303, { location: '/', 'set-cookie': 'dsh-auth-abc=1; Path=/; HttpOnly; SameSite=Strict' });
+    res.end();
+  });
+  await new Promise((r) => upstream.listen(0, '127.0.0.1', r));
+  const proxy = await createPocketProxy({
+    port: 0, host: '127.0.0.1', upstream: { host: '127.0.0.1', port: upstream.address().port },
+    injectHtml: '', launchToken: () => TOK, handshakeLimit: 3,
+  });
+  const base = `http://127.0.0.1:${proxy.port}`;
+  try {
+    // 前 3 次：代理补 token → 上游 303 → 过渡页 200（每次都是新的一次握手尝试）
+    for (let i = 1; i <= 3; i++) {
+      const r = await fetch(`${base}/`, { redirect: 'manual', headers: { host: '192.168.1.50:3081' } });
+      assert.equal(r.status, 200, `第 ${i} 次仍是过渡页`);
+      assert.equal(r.headers.get('x-dsh-pocket-handshake'), 'transition', `第 ${i} 次标记为过渡页`);
+    }
+    // 第 4 次：已达上限 → 不再注入 token，直接给提示页（不再转发给上游）
+    const hitsBefore = upstreamHits;
+    const blocked = await fetch(`${base}/`, { redirect: 'manual', headers: { host: '192.168.1.50:3081' } });
+    assert.equal(blocked.status, 503, '达到上限后返回 503 提示页');
+    assert.equal(blocked.headers.get('x-dsh-pocket-handshake'), 'blocked', '标记为握手被阻断');
+    const body = await blocked.text();
+    assert.match(body, /太多|Safari|cookie/, '提示页说明了原因与规避办法');
+    assert.equal(upstreamHits, hitsBefore, '已达上限后不再打上游（不无限循环）');
+    assert.match(body, /dsh-pocket-retry=1/, '提示页给了「重试」出口，用户不会被锁死');
+
+    // 点「重试」：清零计数 → 握手重新走一遍；且这个自家参数不能透传给上游
+    const retried = await fetch(`${base}/?dsh-pocket-retry=1`, { redirect: 'manual', headers: { host: '192.168.1.50:3081' } });
+    assert.equal(retried.status, 200, '重试后重新进入握手（过渡页）');
+    assert.equal(retried.headers.get('x-dsh-pocket-handshake'), 'transition', '重试后回到过渡页');
+    assert.ok(seen.every((u) => !u.includes('dsh-pocket-retry')), '重试参数不往上游透传');
+    assert.ok(seen[seen.length - 1].includes(`token=${TOK}`), '重试请求仍带上启动 token');
+  } finally {
+    await proxy.close();
+    await new Promise((r) => upstream.close(r));
+  }
+});
+
+test('createHandshakeTracker：窗口内累计、clear 清零、过期重新计数', () => {
+  const t = createHandshakeTracker({ max: 3, windowMs: 1000 });
+  const now = Date.now();
+  assert.equal(t.record('1.2.3.4', now), 1);
+  assert.equal(t.record('1.2.3.4', now + 10), 2);
+  assert.equal(t.record('1.2.3.4', now + 20), 3);
+  assert.equal(t.exhausted('1.2.3.4'), true, '达到上限');
+  assert.equal(t.exhausted('5.6.7.8'), false, '别的 IP 不受影响');
+  t.clear('1.2.3.4');
+  assert.equal(t.exhausted('1.2.3.4'), false, 'clear 后清零');
+  // 窗口过期重新计数
+  assert.equal(t.record('9.9.9.9', now), 1);
+  assert.equal(t.record('9.9.9.9', now + 2000), 1, '超过窗口 → 重新从第 1 次开始');
+  // prune 清理过期条目
+  t.record('8.8.8.8', now);
+  t.prune(now + 5000);
+  assert.equal(t.exhausted('8.8.8.8'), false, '过期条目被清掉');
 });
 
 test('?token=<原始 PIN> 直达种 HttpOnly cookie，issue #35', async () => {
