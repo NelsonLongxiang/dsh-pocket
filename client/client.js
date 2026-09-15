@@ -1530,6 +1530,19 @@ var MOBILE_CSS = `
   }
 }
 
+/* ---------- mobile: stop iOS Safari forced zoom on input focus ----------
+ * Inputs are rendered with inline fontSize 13-14px, below the 16px threshold
+ * that makes iOS Safari zoom the whole page on focus (and never recover).
+ * Force the safe 16px minimum on narrow viewports only, so desktop keeps its
+ * tighter metrics. !important is required to beat the inline styles. */
+@media (max-width: 1024px) {
+  input,
+  textarea,
+  [contenteditable="true"] {
+    font-size: 16px !important;
+  }
+}
+
 /* ---------- desktop: the mobile controls must never appear ---------- */
 
 @media (min-width: 1024px) {
@@ -1783,6 +1796,33 @@ function mobileApply(ctx) {
     );
     return startFileGuard(readFile);
   }, "dsh-mobile-nav: file open guard + copy button + hide add-workspace (issue #17)");
+  ctx.effect(() => {
+    if (!narrow.matches) return () => {
+    };
+    const PHRASES = ["\u52A0\u8F7D\u63D0\u4F9B\u65B9\u76EE\u5F55\u5931\u8D25", "Settings are unavailable in this browser"];
+    const NOTICE = "\u624B\u673A\u4E0A\u4E0D\u652F\u6301\u6A21\u578B\u8BBE\u7F6E\uFF0C\u8BF7\u53BB\u7535\u8111\u7AEF\u4FEE\u6539\u8BBE\u7F6E";
+    const findDeepest = (el) => {
+      let deepest = el;
+      for (const child of el.querySelectorAll("*")) {
+        if (PHRASES.some((p) => (child.textContent ?? "").includes(p))) deepest = child;
+      }
+      return deepest;
+    };
+    const patch = () => {
+      for (const el of document.querySelectorAll("body *")) {
+        const t = el.textContent ?? "";
+        if (!PHRASES.some((p) => t.includes(p))) continue;
+        if (el.dataset?.dshpModelNotice === "1") continue;
+        const target = findDeepest(el);
+        target.textContent = NOTICE;
+        target.dataset.dshpModelNotice = "1";
+      }
+    };
+    const observer = new MutationObserver(patch);
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+    patch();
+    return () => observer.disconnect();
+  }, "dsh-mobile-nav: replace model-settings load error with mobile hint");
   ctx.slots.inject("conversation.session.header.actions", () => ctx.slots.register({
     name: "conversation.session.header.actions",
     id: "mobile-nav-toggle",

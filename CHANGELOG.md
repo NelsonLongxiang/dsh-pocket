@@ -1,15 +1,39 @@
+# [2.11.3](https://gitea.local/shaobeichen/dsh-pocket/compare/v2.11.2...v2.11.3) (2026-09-15)
+
+
+### Bug Fixes
+
+* **rpc:** 同步上游 2.10.4..2.10.6——/dsh-pocket 通道直挂插件自身 ctx.webServer（适配 dsh v0.1.5 webServer inject 收缩 #112）、requestRejection 方法形式调用修 403（#117）、移除 LOOPBACK_ENV_PATCH 修远程白屏（#105）、隧道自动恢复标记修复（#107）；fork 保留按端口 cookie 隔离与端口回退遥测
 # [2.11.2](https://gitea.local/shaobeichen/dsh-pocket/compare/v2.11.1...v2.11.2) (2026-09-12)
+## [2.10.6](https://github.com/shaobeichen/dsh-pocket/compare/v2.10.5...v2.10.6) (2026-09-10)
 
 
 ### Bug Fixes
 
 * **release:** 对齐双分叉线——模型管理页签移除（PR #14 产品决策）随 origin/main 回到发布线，保留 0.1.5 宿主 compat fix（PR #15）；上游 2.10.3 安全/移动端修复一并生效
 # [2.11.1](https://gitea.local/shaobeichen/dsh-pocket/compare/v2.11.0...v2.11.1) (2026-09-12)
+* **mobile:** 替换手机端模型设置加载失败提示为引导信息，增加本地真机冒烟测试 ([5ab2ad4](https://github.com/shaobeichen/dsh-pocket/commit/5ab2ad444ba276c5df2bf87fa104c4b16b2081f9))
+
+## [2.10.5](https://github.com/shaobeichen/dsh-pocket/compare/v2.10.4...v2.10.5) (2026-09-10)
 
 
 ### Bug Fixes
 
 * **compat:** 0.1.5 宿主的 connection.rpc.handle 内部读取 webServer 注入，pocket 挂载改为经 ctx.inject(['connection','webServer']) 取得双声明作用域（上游 gateway 同款形态），并对无 inject 的最小 ctx 保持直调降级
+* **rpc:** 以方法形式调用 requestRejection 保留 this 绑定，修复 /dsh-pocket/* 全部 403（issue [#117](https://github.com/shaobeichen/dsh-pocket/issues/117)） ([282f71c](https://github.com/shaobeichen/dsh-pocket/commit/282f71c1d844b0e6123b9c976ad0401c3c4a84e7))
+
+## [2.10.4](https://github.com/shaobeichen/dsh-pocket/compare/v2.10.3...v2.10.4) (2026-09-10)
+
+
+### Bug Fixes
+
+* **client:** prevent iOS Safari input auto-zoom on mobile ([8d5b3fa](https://github.com/shaobeichen/dsh-pocket/commit/8d5b3fa1a14385816e61f92bd83fb239f7d8e74f)), closes [#114](https://github.com/shaobeichen/dsh-pocket/issues/114)
+* **mobile:** 侧边栏先开后弹出 aria-modal 弹窗时自动收起，修复卡死 ([#99](https://github.com/shaobeichen/dsh-pocket/issues/99)) ([f2e60b0](https://github.com/shaobeichen/dsh-pocket/commit/f2e60b0eb03ac1b065788e231590a56316a7cfcf))
+* **proxy:** shim transport.createApiClient for dsh 0.1.1-rc.2 (issue [#96](https://github.com/shaobeichen/dsh-pocket/issues/96)) ([61cadf8](https://github.com/shaobeichen/dsh-pocket/commit/61cadf871ec817f51135277b7fb3085d9492959e))
+* **proxy:** 移除与 DSH Desktop 2.0.4+ 不兼容的 LOOPBACK_ENV_PATCH，修复远程/手机访问白屏 ([#105](https://github.com/shaobeichen/dsh-pocket/issues/105)) ([a1b813d](https://github.com/shaobeichen/dsh-pocket/commit/a1b813d854da5900b55c5893f3190a272cd4a0fc)), closes [#100](https://github.com/shaobeichen/dsh-pocket/issues/100) [#58](https://github.com/shaobeichen/dsh-pocket/issues/58)
+* **rpc:** 适配 dsh v0.1.5-alpha.1 的 webServer inject 收缩，堵住启动崩溃 ([#112](https://github.com/shaobeichen/dsh-pocket/issues/112)) ([2ac8efd](https://github.com/shaobeichen/dsh-pocket/commit/2ac8efdb46de19959c1fc59eeddf2f12b42cb909)), closes [#109](https://github.com/shaobeichen/dsh-pocket/issues/109) [#113](https://github.com/shaobeichen/dsh-pocket/issues/113) [#111](https://github.com/shaobeichen/dsh-pocket/issues/111)
+* **security:** 收紧限速身份键与登录比较，修隧道失败态残留，移除已删功能的 README 残留 ([517eb00](https://github.com/shaobeichen/dsh-pocket/commit/517eb004ce869f5e140159dfa118ab833a37fd6c)), closes [#69](https://github.com/shaobeichen/dsh-pocket/issues/69)
+* **tunnel:** 进程退出不再清除自动恢复标记，修复重启后公网隧道不自动恢复 ([#107](https://github.com/shaobeichen/dsh-pocket/issues/107)) ([db1e5c4](https://github.com/shaobeichen/dsh-pocket/commit/db1e5c418cae91ae1e56f4d6c5c05413ddea02c2)), closes [#11](https://github.com/shaobeichen/dsh-pocket/issues/11) [#106](https://github.com/shaobeichen/dsh-pocket/issues/106)
 
 ## [2.10.3](https://github.com/shaobeichen/dsh-pocket/compare/v2.10.2...v2.10.3) (2026-09-03)
 
