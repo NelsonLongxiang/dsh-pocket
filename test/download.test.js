@@ -102,6 +102,7 @@ test('resolveCloudflared：手动放置的资产名文件也能命中缓存（is
 });
 
 test('resolveCloudflared：Linux 上丢弃 Homebrew bottle 坏缓存（issue #22）', async () => {
+  if (process.platform !== 'linux') return; // 场景本身声明 Linux；Windows 下跳过（假二进制无法 spawn）
   const fsp = await import('node:fs/promises');
   const os = await import('node:os');
   const path = await import('node:path');

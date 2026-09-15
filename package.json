@@ -24,7 +24,8 @@
   "scripts": {
     "build:client": "node client/build.mjs",
     "release": "semantic-release",
-    "test": "node --test --test-timeout=30000 \"test/*.test.js\""
+    "test": "node --test --test-timeout=30000 \"test/*.test.js\"",
+    "test:local": "node --test --test-timeout=300000 \"test/local/*.test.js\""
   },
   "dependencies": {
     "qrcode": "^1.5.4",
@@ -81,5 +82,5 @@
     "access": "public",
     "registry": "http://192.168.3.88:3000/api/packages/jf-tech/npm/"
   },
-  "version": "2.11.2"
+  "version": "2.11.3"
 }

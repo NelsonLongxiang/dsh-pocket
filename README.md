@@ -6,6 +6,8 @@
 
 <p align="center"><a href="README.en.md">English</a> | <a href="README.md">中文</a></p>
 
+<p align="center"><a href="https://trendshift.io/repositories/166736?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-166736" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/166736/daily?language=JavaScript" alt="shaobeichen%2Fdsh-pocket | Trendshift" width="250" height="55"/></a></p>
+
 <p align="center">
   <a href="https://www.npmjs.com/package/dsh-pocket"><img alt="npm" src="https://img.shields.io/npm/v/dsh-pocket?color=4d6bfe&label=npm"></a>
   <a href="https://www.npmjs.com/package/dsh-pocket"><img alt="downloads" src="https://img.shields.io/npm/dm/dsh-pocket?color=4d6bfe"></a>
@@ -39,22 +41,21 @@ DSH Pocket 就是干这个的：**装上它，手机扫个码，就能实时看�
 
 ## ✨ 特性
 
-| 特性 | 说明 |
-|---|---|
-| 📶 局域网扫码 | 装好即用：设置 → 手机访问，打开就有局域网二维码，手机连同一 WiFi 扫码即开（自动识别本机局域网 IP，**WSL 环境自动取 Windows 物理网卡 IP**） |
-| 🚪 局域网开关 | 设置页可**一键关闭/开启局域网访问**（切换时弹窗提醒）：关闭后局域网二维码/链接立即失效，仅公网可用 |
-| 🌐 公网扫码（人在外面） | 点「开启公网访问」→ cloudflared 隧道 → 出公网二维码，4G/任何网络都能访问 |
-| 🏷️ 公网固定域名 | 可选「**命名隧道**」模式：填 Cloudflare Tunnel Token + 自己的域名，公网地址**固定不变**（重启不再变；见下方说明） |
-| 🔐 访问密码 | 公网链接需输入 **8 位密码**（默认每次开启公网自动换新；**可自定义固定密码**——自定义后不再换新）；局域网有独立 **8 位密码**（默认开启，设置页可**一键关闭**——关闭后局域网扫码直连） |
-| 🔑 自定义密码 | 公网/局域网密码都可在设置页**设成自己固定的 8 位密码（英文字母大小写或数字）**（自定义后公网不再自动换新） |
-| 🧘 会话保持 | 手机输一次密码后**长期免输**（登录状态绑定电脑上的 dsh web 进程：只要它不重启，手机不用再输；**dsh web 重启/更新后需重新输入一次**） |
-| ⚡ 实时同步 | 流式输出走 WebSocket 全透传——**电脑上在输出，手机上同步在滚**，可双向操作；内置心跳保活（防路由器 NAT/省电机制静默断链，断线自动重连） |
-| 📱 移动端适配 | 窄屏自动变抽屉布局（移植 dsh-web-mobile，MIT）：侧栏抽屉、会话全宽、状态栏安全区、触控优化 |
-| 📁 文件浏览 | 移动端「文件浏览」入口需要宿主提供 explorer 面板（dsh-web-ui 组件）；官方 DSH 未内置时入口自动隐藏，不会出现"点了没反应" |
-| 🗜️ 传输压缩 | 大 JSON 响应自动 gzip/brotli（长会话 17MB → ~1MB，brotli 质量 6：快且省流量），手机加载更快、更省流量 |
-| 🔁 隧道自动恢复 | DSH 重启后自动重新拉起之前开着的公网隧道，无需手动重开 |
-| 🧩 零依赖安装 | 一个 npm 包、一个设置页，没有核心/适配器要分开装；无需账号、无需服务器 |
-| 📡 提供方目录（只读） | 设置新增「提供方目录」页签：局域网/公网访问时也能看到全部模型提供方及启用状态——核心「模型」页的设置读取仅限本机（loopback），远程打开会报错，这里补上远程可看的只读目录；密钥与配置仍在本机「模型」页管理 |
+| 特性                    | 说明                                                                                                                                                                               |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 📶 局域网扫码           | 装好即用：设置 → 手机访问，打开就有局域网二维码，手机连同一 WiFi 扫码即开（自动识别本机局域网 IP，**WSL 环境自动取 Windows 物理网卡 IP**）                                         |
+| 🚪 局域网开关           | 设置页可**一键关闭/开启局域网访问**（切换时弹窗提醒）：关闭后局域网二维码/链接立即失效，仅公网可用                                                                                 |
+| 🌐 公网扫码（人在外面） | 点「开启公网访问」→ cloudflared 隧道 → 出公网二维码，4G/任何网络都能访问                                                                                                           |
+| 🏷️ 公网固定域名         | 可选「**命名隧道**」模式：填 Cloudflare Tunnel Token + 自己的域名，公网地址**固定不变**（重启不再变；见下方说明）                                                                  |
+| 🔐 访问密码             | 公网链接需输入 **8 位密码**（默认每次开启公网自动换新；**可自定义固定密码**——自定义后不再换新）；局域网有独立 **8 位密码**（默认开启，设置页可**一键关闭**——关闭后局域网扫码直连） |
+| 🔑 自定义密码           | 公网/局域网密码都可在设置页**设成自己固定的 8 位密码（英文字母大小写或数字）**（自定义后公网不再自动换新）                                                                         |
+| 🧘 会话保持             | 手机输一次密码后**长期免输**（登录状态绑定电脑上的 dsh web 进程：只要它不重启，手机不用再输；**dsh web 重启/更新后需重新输入一次**）                                               |
+| ⚡ 实时同步             | 流式输出走 WebSocket 全透传——**电脑上在输出，手机上同步在滚**，可双向操作；内置心跳保活（防路由器 NAT/省电机制静默断链，断线自动重连）                                             |
+| 📱 移动端适配           | 窄屏自动变抽屉布局（移植 dsh-web-mobile，MIT）：侧栏抽屉、会话全宽、状态栏安全区、触控优化                                                                                         |
+| 📁 文件浏览             | 移动端「文件浏览」入口需要宿主提供 explorer 面板（dsh-web-ui 组件）；官方 DSH 未内置时入口自动隐藏，不会出现"点了没反应"                                                           |
+| 🗜️ 传输压缩             | 大 JSON 响应自动 gzip/brotli（长会话 17MB → ~1MB，brotli 质量 6：快且省流量），手机加载更快、更省流量                                                                              |
+| 🔁 隧道自动恢复         | DSH 重启后自动重新拉起之前开着的公网隧道，无需手动重开                                                                                                                             |
+| 🧩 零依赖安装           | 一个 npm 包、一个设置页，没有核心/适配器要分开装；无需账号、无需服务器                                                                                                             |
 
 ## 🚀 怎么用
 
@@ -73,7 +74,7 @@ npm install -g @deepseek-ai/dsh     # 全局安装；验证：dsh --version
 
 ```sh
 # 1. 装插件（一个包全都有）
-dsh plugin --profile web add @nelsonlongxiang/dsh-pocket -w
+dsh plugin --profile web add dsh-pocket -w
 
 # 2. 重启 dsh web
 npx @deepseek-ai/dsh web
@@ -128,28 +129,18 @@ npx @deepseek-ai/dsh web
 
 ## 🩹 常见问题（别踩的坑）
 
-| 现象 | 原因与解决 |
-|---|---|
-| `dsh: command not found` / 提示 DSH 未定义 | dsh CLI 没装：`npm install -g @deepseek-ai/dsh`，或命令前加 `npx @deepseek-ai/dsh` |
-| `ERR_PNPM_ADDING_TO_ROOT` | pnpm 9 对 workspace 根的限制：安装/更新命令**末尾加 `-w`**（`--workspace-root`） |
-| 装完/更新了但界面没变化 | **必须重启 `dsh web`** 才生效；运行中的进程仍加载旧代码 |
-| `listen EADDRINUSE ... :3081` | 旧 dsh-pocket 进程还占着端口：macOS/Linux `lsof -ti :3081 \| xargs kill -9`；Windows `netstat -ano \| findstr :3081`（找 LISTENING 的 PID）→ `taskkill /PID <PID> /F`，后重试 |
-| 想换端口（issue #70） | 插件模式：在 `$DSH_HOME/dsh-pocket/settings.json` 写 `"proxyPort": 3082` 后重启 `dsh web`。CLI 模式：`dsh-pocket --port 3082`。端口被占会报 `EADDRINUSE`，杀掉旧进程或换一个端口 |
-| 给访客一个临时 PIN（issue #69） | 设置页「临时访问 PIN」区块 → 选公网/局域网 + 时长（1h/24h/7d） + 备注 → 生成。把 8 位 PIN + 入口 URL 一起发给对方；过期自动作废，也能手动撤销。临时 PIN 与主 PIN 共用速率限制 |
+| 现象                                        | 原因与解决                                                                                                                                                                                                                                                                                                                                              |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `dsh: command not found` / 提示 DSH 未定义  | dsh CLI 没装：`npm install -g @deepseek-ai/dsh`，或命令前加 `npx @deepseek-ai/dsh`                                                                                                                                                                                                                                                                      |
+| `ERR_PNPM_ADDING_TO_ROOT`                   | pnpm 9 对 workspace 根的限制：安装/更新命令**末尾加 `-w`**（`--workspace-root`）                                                                                                                                                                                                                                                                        |
+| 装完/更新了但界面没变化                     | **必须重启 `dsh web`** 才生效；运行中的进程仍加载旧代码                                                                                                                                                                                                                                                                                                 |
+| `listen EADDRINUSE ... :3081`               | 旧 dsh-pocket 进程还占着端口：macOS/Linux `lsof -ti :3081 \| xargs kill -9`；Windows `netstat -ano \| findstr :3081`（找 LISTENING 的 PID）→ `taskkill /PID <PID> /F`，后重试                                                                                                                                                                           |
+| 想换端口（issue #70）                       | 插件模式：在 `$DSH_HOME/dsh-pocket/settings.json` 写 `"proxyPort": 3082` 后重启 `dsh web`。CLI 模式：`dsh-pocket --port 3082`。端口被占会报 `EADDRINUSE`，杀掉旧进程或换一个端口                                                                                                                                                                        |
+| 想给访客一个临时密码                        | 暂不支持：issue #69 的「临时访问 PIN」功能已在 2.6.x 移除（撤销时会崩）。现在分享访问：把主密码或 `?token=<主密码>` 链接发给对方，用完在设置页点「刷新」换掉即可                                                                                                                                                                                        |
 | Linux 服务器装不上 cloudflared（issue #45） | 远程 Linux 国内/企业网下所有 CDN 源（GitHub/ghproxy/gh.ddlc/gh-proxy）都连不上时：在服务器上手动装 `cloudflared`（如 `apt install cloudflared`、`dnf install cloudflared`、或下载 tgz 解压到任意目录），然后在 `$DSH_HOME/dsh-pocket/settings.json` 加 `"cloudflaredPath": "/path/to/cloudflared"`，重启 `dsh web` 后插件直接调用它，**不再走自动下载** |
-| 版本停在 0.x 升不上去 | `^0.x` 范围不允许升到 1.x：更新用 `--latest`（`dsh plugin --profile web update dsh-pocket --latest -w`） |
-| 公网 `error 1033` | 见下方「公网隧道常见问题」——多半是本机代理/VPN（Clash 等 TUN 模式）掐断了隧道 |
-| 点「重启 dsh web」后页面提示进程在后台运行 | 自重启的新进程是 detached 后台进程（不挂终端），是页内更新的标准做法；停止它：macOS/Linux `lsof -ti :3080 \| xargs kill -9`；Windows `netstat -ano \| findstr :3080` → `taskkill /PID <PID> /F`（日志在 `$DSH_HOME` 下 `dsh-pocket-restart-*.log`） |
-
-### 📐 端口回退规格（正式行为，2026-09-04 定案）
-
-代理端口的占用处理是**正式规格**，不是实现巧合：
-
-1. **+N 步长回退**：端口被占（`EADDRINUSE`）时从配置端口起自动 +1 递增寻找空闲端口，最多尝试 10 个；**10 个全占才抛 `EADDRINUSE` 失败**（fail-fast 边界）。
-2. **回退必须高声留痕**（不可静默漂移）：回退发生时输出显著日志行（含原端口与实际端口，双语），同时把回退事实 `{ from, to }` 写入状态快照——RPC `status()` 返回 `proxyPortFallback` 字段（无回退时为 `null`），UI/外部巡检据此分辨「设置值」与「回退值」。
-3. **为什么必须可见**：端口静默漂移曾导致「半恢复」误判与跨节点指向混乱（2026-09-04 .157 端口漂移事故）——回退本身是救命行为（争用时持续服务），但**不可见**的回退是事故根源。
-4. 默认端口推导（dsh web 端口 +10000，v2.9.0）与显式 `proxyPort` 配置（issue #70）之上，本规格统一生效。
-
+| 版本停在 0.x 升不上去                       | `^0.x` 范围不允许升到 1.x：更新用 `--latest`（`dsh plugin --profile web update dsh-pocket --latest -w`）                                                                                                                                                                                                                                                |
+| 公网 `error 1033`                           | 见下方「公网隧道常见问题」——多半是本机代理/VPN（Clash 等 TUN 模式）掐断了隧道                                                                                                                                                                                                                                                                           |
+| 点「重启 dsh web」后页面提示进程在后台运行  | 自重启的新进程是 detached 后台进程（不挂终端），是页内更新的标准做法；停止它：macOS/Linux `lsof -ti :3080 \| xargs kill -9`；Windows `netstat -ano \| findstr :3080` → `taskkill /PID <PID> /F`（日志在 `$DSH_HOME` 下 `dsh-pocket-restart-*.log`）                                                                                                     |
 
 ## ⚠️ 公网隧道常见问题（必读）
 
@@ -179,9 +170,11 @@ npx @deepseek-ai/dsh web
 **其他可能**：企业防火墙/校园网拦截出站；此时请让 IT 放行或改用热点。
 
 **首次开启时「下载 cloudflared」失败/卡住**：
+
 - **macOS/Linux**：优先走**清华镜像**（实测 ~3MB/s，几秒下完）；失败自动回退官方 GitHub + 加速源。
 - **Windows**：无清华镜像（Homebrew 不支持 Windows），走官方直连下载（约 50MB，**单线程会慢，属正常**，耐心等几分钟；也可挂代理加速）。
 - 全部失败时设置页会给出提示。备选方案（任选其一）：
+
 1. 手动装好命令行 cloudflared 后重试（装好后 dsh-pocket 直接用 PATH 里的，不再下载）：
    - macOS：`brew install cloudflared`；Linux：`sudo apt install cloudflared` 或官网下载
    - Windows：`winget install cloudflared` 或官网下载
@@ -191,16 +184,16 @@ npx @deepseek-ai/dsh web
 
 ## 🗂 架构（单包）
 
-| 文件 | 说明 |
-|---|---|
-| `lib/index.js` | 插件入口：自动起代理 + 注册 RPC + 访问密码管理（公网 8 位每次开启变新；局域网独立 8 位可手动刷新/开关）+ 局域网访问总开关 + 桌面端环境适配 |
-| `lib/settings.mjs` | 设置持久化：局域网访问总开关（默认开启）+ 局域网密码开关（默认开启）存 `$DSH_HOME/dsh-pocket/settings.json` |
-| `lib/service.mjs` | 服务：代理生命周期（端口自适应）、公网隧道（自动恢复）、状态快照（含二维码） |
-| `lib/proxy.mjs` | 改头反向代理：Host/Origin → loopback，HTTP + WebSocket 透传 + polyfill 注入 + gzip/brotli 压缩 + 按 Host 区分的访问令牌认证（公网必验；局域网按开关）+ 局域网关闭时拦截局域网 Host |
-| `lib/tunnel.mjs` | cloudflared：多镜像源下载（清华优先）/自适应多线程/启动/解析公网 URL（HTTP/2） |
-| `lib/web-rpc.js` | loopback RPC：`status` / `tunnel.start` / `tunnel.stop` / `lan.setEnabled` / `version` / `update` / `restart` |
-| `client/` | 设置页「手机访问」+ 移动端适配（dsh-web-mobile 移植） |
-| `bin/dsh-pocket.mjs` | CLI：局域网/公网模式，打印 URL + 二维码 |
+| 文件                 | 说明                                                                                                                                                                               |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `lib/index.js`       | 插件入口：自动起代理 + 注册 RPC + 访问密码管理（公网 8 位每次开启变新；局域网独立 8 位可手动刷新/开关）+ 局域网访问总开关 + 桌面端环境适配                                         |
+| `lib/settings.mjs`   | 设置持久化：局域网访问总开关（默认开启）+ 局域网密码开关（默认开启）存 `$DSH_HOME/dsh-pocket/settings.json`                                                                        |
+| `lib/service.mjs`    | 服务：代理生命周期（端口自适应）、公网隧道（自动恢复）、状态快照（含二维码）                                                                                                       |
+| `lib/proxy.mjs`      | 改头反向代理：Host/Origin → loopback，HTTP + WebSocket 透传 + polyfill 注入 + gzip/brotli 压缩 + 按 Host 区分的访问令牌认证（公网必验；局域网按开关）+ 局域网关闭时拦截局域网 Host |
+| `lib/tunnel.mjs`     | cloudflared：多镜像源下载（清华优先）/自适应多线程/启动/解析公网 URL（HTTP/2）                                                                                                     |
+| `lib/web-rpc.js`     | loopback RPC：`status` / `tunnel.start` / `tunnel.stop` / `lan.setEnabled` / `version` / `update` / `restart`                                                                      |
+| `client/`            | 设置页「手机访问」+ 移动端适配（dsh-web-mobile 移植）                                                                                                                              |
+| `bin/dsh-pocket.mjs` | CLI：局域网/公网模式，打印 URL + 二维码                                                                                                                                            |
 
 ## 🛠 开发
 
@@ -226,53 +219,3 @@ npm test                # 代理 / 认证 / 压缩 / 隧道 / 服务 / RPC / 设
 ---
 
 **有问题？欢迎反馈**：遇到 Bug、有想法、想提需求，请到 [GitHub Issues](https://github.com/shaobeichen/dsh-pocket/issues) 告诉我们 🙏
-
-## v1.10.0
-
-- **Breaking-ish**: 默认代理端口 3081 → **13080**（避开 dsh web/test homes 的 308x 段）；显式 `--port` 仍优先。端口被占用时自动 +1 递增寻找空闲端口。
-  - **已被上游取代（v2.7.1 同步起）**：源码默认回归上游 3081，改用上游 v2.3.0 原生的 `settings.json` → `"proxyPort": 13080` 实现同等效果，源码零 diff。
-
-## v1.30.0
-
-- 包名迁移：`dsh-pocket` → `@nelsonlongxiang/dsh-pocket`（scoped，与生态 .npmrc 路由惯例一致；公网 npmjs 同名包为上游官方线）
-
-## v2.7.1（上游同步）
-
-- 同步上游 `shaobeichen/dsh-pocket` v1.12.3 → **v2.7.1**（72 提交，约 30 个版本）：代理/隧道稳定性（WS 半开泄漏、命名 tunnel、cloudflared 裸二进制）、设置页结构化卡片重构（v2.0.0，BREAKING：DOM/locale keys）、移动端体验（宽屏布局、触摸自愈）、恢复出厂设置、`proxyPort` 可配置（#70）等。
-- 版本号回归上游基线（1.31.0 → 2.7.1），后续同步以 tag 对齐，消除版本冲突。
-- 保留 fork 定制：scoped 包名 + client bundle 按包名注册 + 端口走 `proxyPort` 配置。
-
-## v2.9.0（端口推导，收编 feat/derive-pocket-port）
-
-- **默认代理端口 = dsh web 端口 + 10000**（3080→13080、3081→13081、3084→13084）：多实例（生产 + 测试 home）并行时默认端口天然错开，不再互抢、不再依赖 EADDRINUSE 退避。移植自未合并分支 `feat/derive-pocket-port@e437996`，适配 2.8.0 基线。
-- 端口优先级：`internals.port` > `config.port` > **`settings.json` 的 `proxyPort`（issue #70）** > 推导默认（非法 dshPort 回退 13080）。显式配置（含 proxyPort）被占时保持上游 fail-fast 抛错——不做静默端口漂移（漂移正是历史 cookie 互顶事故的根源）。
-- 会话 cookie 按实际绑定端口隔离（v2.8.0 特性），与推导端口天然协同。
-- ⚠️ 部署注意：web 端口非 3080 的节点（如 .223/.43 的 3084）若此前依赖固定 13080 且未显式配置，升级后 pocket 将落在 13084——需要保持 13080 的在 `settings.json` 写 `"proxyPort": 13080`。
-
-## v2.9.1（修复模型管理页崩溃）
-
-- 修复手机端「模型管理」页 `❌ Cannot read properties of undefined (reading 'llm')`：根因是桌面端 DSH 的 Remote namespaces 重构移除了 `ctx.connection.api`（宿主升级抽走了插件依赖的地板），provider 目录特性整个数据层随之失效。
-- 数据层改挂 `ctx.remote`（llm/settings/credentials 三命名空间，bundle 注入 `@deepseek-ai/dsh-api-remotes`）：`providers` 目录改用 `listConfigurableProviders()`（字段 provider/settingsNs/settingsPath 与旧消费 1:1 吻合）、`discoverModels` 适配新签名 `(settingsNs, request)`；旧宿主回落 `ctx.connection.api`，双面兼容。
-- `unwrap` 双信封兼容（新平信封 `{ok,value}` 与旧 `{rpcId,result:{ok,value}}`）——宿主或调用面任一升级都不再破坏设置页与模型页。
-
-## v2.10.0（上游同步 2）
-
-- 同步上游 v2.7.1 → **v2.10.0**：tunnel 参数重构（#78：`--no-autoupdate` 移到全局位置）、安全线净效果合入（#82/#83 会话指纹防钓鱼引入后移除）、`firstMeaningfulErrorLine` 参数错误诊断等。
-- 三项 fork 定制经自动合并全部存活并复核：scoped 包名、端口推导（`resolvePocketPort` 四级链）+ 按端口 cookie、模型管理 `ctx.remote` 数据层 + 双信封 unwrap。
-
-## v2.10.5（上游同步 3：#90/#91 安全线与体验修复）
-
-- 同步上游 v2.10.0 → **v2.10.3**：`policyHost()`（真实源地址给伪造 Host 设下限，#90）、`?token=`/WS 限速旁路封堵（穷举不再有免计费通道）、Safari 局域网 303 死循环修复（#91）+ 握手重试上限、移动端 composer/抽屉修复（#85/#88/#89）。
-- 与 fork 定制语义合流：限速封堵接入按端口 cookie 认证路径；正确的分享链接（`?token=` 命中）现在会**清除该 IP 失败计数**（与 POST 登录成功同权），GET 仍 302 洗参、非 GET 仍写头补种。
-- 三定制 + 安全线（safeEqual/timing-safe）经 47 项认证类测试与全量 154 测试验证（3 失败均为已知 Windows 环境/平台类）。
-- 版本号随上游基线对齐 2.10.0。
-
-## v2.10.1（收编 security-hardening）
-
-- 合并 PR #8（timing-safe token/PIN 比较、writeSettings 可见告警、`?token=` 302 洗参）到新基线：safeEqual 进入多 token authCheck，302 洗参与按端口 cookie/推导端口协同。
-
-## v2.11.0（移除模型管理功能）
-
-- 应产品决策移除手机端「模型管理 | Models」页签整块功能（源自 provider-directory 六提交线）：删除 ModelsManagerTab、pocket-models slot、ctx.remote 适配层与 `@deepseek-ai/dsh-api-remotes` 注入（-1081 行）。
-- 保留沉淀：2.9.1 的「ctx.remote 迁移 + 双信封 unwrap」修复模式与「宿主升级抽走插件地板」教训在案（unwrap 保留，设置页继续受益）；per-port cookie 与端口推导不受影响。
-- 手机端模型配置回归桌面端核心设置页（核心能力，不经 pocket 代理面暴露）。
